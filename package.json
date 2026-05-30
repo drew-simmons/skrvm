@@ -7,20 +7,23 @@
     "check:rust": "cargo check --manifest-path src-tauri/Cargo.toml",
     "build": "tsc && vite build",
     "dev": "vite",
-    "fmt:ts": "oxfmt",
-    "fmt:ts-check": "oxfmt --check",
     "fmt:rust": "cargo fmt --manifest-path src-tauri/Cargo.toml",
     "fmt:rust-check": "cargo fmt --manifest-path src-tauri/Cargo.toml -- --check",
-    "fmt": "pnpm fmt:ts && pnpm fmt:rust",
-    "fmt:check": "pnpm fmt:ts-check && pnpm fmt:rust-check",
-    "lint:ts": "oxlint",
-    "lint:ts-fix": "oxlint --fix",
+    "fmt:ts": "oxfmt",
+    "fmt:ts-check": "oxfmt --check",
+    "fmt": "pnpm fmt:rust && pnpm fmt:ts",
+    "fmt:check": "pnpm fmt:rust-check && pnpm fmt:ts-check",
     "lint:rust": "cargo clippy --manifest-path src-tauri/Cargo.toml",
     "lint:rust-fix": "cargo clippy --manifest-path src-tauri/Cargo.toml --fix --allow-dirty --allow-staged",
-    "lint": "pnpm lint:ts && pnpm lint:rust",
-    "lint:fix": "pnpm lint:ts-fix && pnpm lint:rust-fix",
+    "lint:ts": "oxlint",
+    "lint:ts-fix": "oxlint --fix",
+    "lint": "pnpm lint:rust && pnpm lint:ts",
+    "lint:fix": "pnpm lint:rust-fix && pnpm lint:ts-fix",
     "preview": "vite preview",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "test:rust": "cargo test --manifest-path src-tauri/Cargo.toml",
+    "test:ts": "vitest run",
+    "test": "pnpm test:rust && pnpm test:ts"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",
@@ -30,12 +33,16 @@
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2",
+    "@testing-library/jest-dom": "^6.9.1",
+    "@testing-library/react": "^16.3.2",
     "@types/react": "^19.1.8",
     "@types/react-dom": "^19.1.6",
     "@vitejs/plugin-react": "^4.6.0",
+    "jsdom": "^29.1.1",
     "oxfmt": "^0.52.0",
     "oxlint": "^1.67.0",
     "typescript": "~5.8.3",
-    "vite": "^7.0.4"
+    "vite": "^7.0.4",
+    "vitest": "^4.1.7"
   }
 }
