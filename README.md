@@ -158,11 +158,11 @@ double-dash split format: a **YAML Frontmatter** config block followed by a
 ````yaml
 ---
 tracker:
-  kind: "jira"                         # Supported: "jira", "linear", or "memory"
+  kind: "jira"                           # Supported: "jira", "linear", or "memory"
   endpoint: "https://your-domain.atlassian.net"
-  api_key: "$JIRA_API_KEY"             # Env variables resolved with '$' prefix
+  api_key: "$JIRA_API_KEY"               # Env variables resolved with '$' prefix
   project_slug: "PROJ"
-  assignee: "$JIRA_ASSIGNEE"           # Optional: Filter by assignee (can use "me" for Linear)
+  assignee: "$JIRA_ASSIGNEE"             # Optional: Filter by assignee (can use "me" for Linear)
   active_states:
     - "Todo"
     - "In Progress"
@@ -171,7 +171,7 @@ tracker:
     - "Done"
 
 polling:
-  interval_ms: 30000                   # How often to check for tracker updates
+  interval_ms: 30000                      # How often to check for tracker updates
 
 workspace:
   root: "~/dev/scratch/skrvm/workspaces"  # Tilde ~ and env variables supported
@@ -182,7 +182,7 @@ agent:
   max_retry_backoff_ms: 300000
 
 codex:
-  command: "codex app-server"          # Terminal command to launch the agent
+  command: "codex app-server"             # Terminal command to launch the agent
   thread_sandbox: "workspace-write"
   turn_timeout_ms: 3600000
 
@@ -221,10 +221,10 @@ Skrvm interacts with the coding agent process over standard streams
       |                                           |
       | ------ initialized (Notification) ------> |
       |                                           |
-      | ------ thread/start (RPC Request) -------> |
-      | <----- thread/start (RPC Response) ------- |
+      | ------ thread/start (RPC Request) ------> |
+      | <----- thread/start (RPC Response) -----> |
       |                                           |
-      | ------ turn/start (RPC Request) ---------> |
+      | ------ turn/start (RPC Request) --------> |
       | <----- turn/start (RPC Response) -------- |
       |                                           |
       | [Streaming Turn Reader Loop Starts]       |
