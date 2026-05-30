@@ -173,18 +173,27 @@ impl Settings {
             self.tracker.api_key = resolve_env_ref(api_key)
                 .or_else(|| env::var("JIRA_API_KEY").ok())
                 .or_else(|| env::var("JIRA_API_TOKEN").ok())
-                .or_else(|| env::var("LINEAR_API_KEY").ok());
+                .or_else(|| env::var("LINEAR_API_KEY").ok())
+                .or_else(|| env::var("GITHUB_TOKEN").ok())
+                .or_else(|| env::var("GITHUB_API_KEY").ok());
         } else {
             self.tracker.api_key = env::var("JIRA_API_KEY")
                 .ok()
                 .or_else(|| env::var("JIRA_API_TOKEN").ok())
-                .or_else(|| env::var("LINEAR_API_KEY").ok());
+                .or_else(|| env::var("LINEAR_API_KEY").ok())
+                .or_else(|| env::var("GITHUB_TOKEN").ok())
+                .or_else(|| env::var("GITHUB_API_KEY").ok());
         }
 
         if let Some(ref assignee) = self.tracker.assignee {
             self.tracker.assignee = resolve_env_ref(assignee)
                 .or_else(|| env::var("JIRA_ASSIGNEE").ok())
-                .or_else(|| env::var("LINEAR_ASSIGNEE").ok());
+                .or_else(|| env::var("LINEAR_ASSIGNEE").ok())
+                .or_else(|| env::var("GITHUB_ASSIGNEE").ok());
+        }
+
+        if self.tracker.kind == "github" && self.tracker.endpoint.is_empty() {
+            self.tracker.endpoint = "https://api.github.com".to_string();
         }
 
         // Workspace Path resolution
@@ -209,6 +218,7 @@ impl Settings {
         if self.tracker.kind != "linear"
             && self.tracker.kind != "jira"
             && self.tracker.kind != "memory"
+            && self.tracker.kind != "github"
         {
             return Err(format!("Unsupported tracker kind: {}", self.tracker.kind));
         }
@@ -237,6 +247,18 @@ impl Settings {
             }
             if self.tracker.endpoint.is_empty() {
                 return Err("Missing Jira endpoint".to_string());
+            }
+        }
+
+        if self.tracker.kind == "github" {
+            if self.tracker.api_key.is_none() || self.tracker.api_key.as_ref().unwrap().is_empty() {
+                return Err(
+                    "Missing GitHub API token. Export GITHUB_TOKEN or set tracker.api_key"
+                        .to_string(),
+                );
+            }
+            if self.tracker.project_slug.is_empty() {
+                return Err("Missing GitHub project_slug".to_string());
             }
         }
 

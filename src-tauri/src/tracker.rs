@@ -180,6 +180,10 @@ pub async fn fetch_candidate_issues(config: &Settings) -> Result<Vec<Issue>, Str
         return fetch_candidate_issues_jira(config).await;
     }
 
+    if config.tracker.kind == "github" {
+        return fetch_candidate_issues_github(config).await;
+    }
+
     let client = reqwest::Client::new();
     let api_key = config
         .tracker
@@ -352,6 +356,10 @@ pub async fn fetch_issue_states_by_ids(
         return fetch_issue_states_by_ids_jira(config, ids).await;
     }
 
+    if config.tracker.kind == "github" {
+        return fetch_issue_states_by_ids_github(config, ids).await;
+    }
+
     let client = reqwest::Client::new();
     let api_key = config
         .tracker
@@ -473,6 +481,10 @@ pub async fn fetch_issues_by_states(
 
     if config.tracker.kind == "jira" {
         return fetch_issues_by_states_jira(config, state_names).await;
+    }
+
+    if config.tracker.kind == "github" {
+        return fetch_issues_by_states_github(config, state_names).await;
     }
 
     let client = reqwest::Client::new();
@@ -1119,6 +1131,258 @@ async fn fetch_issues_by_states_jira(
     Ok(all_issues)
 }
 
+// ==========================================
+// GitHub Issues Integration Support
+// ==========================================
+
+#[derive(Deserialize, Debug)]
+struct GitHubIssue {
+    number: i64,
+    title: String,
+    body: Option<String>,
+    state: String,
+    html_url: String,
+    assignee: Option<GitHubUser>,
+    labels: Option<Vec<GitHubLabel>>,
+    created_at: String,
+    updated_at: String,
+    pull_request: Option<serde_json::Value>,
+}
+
+#[derive(Deserialize, Debug)]
+struct GitHubUser {
+    login: String,
+}
+
+#[derive(Deserialize, Debug)]
+struct GitHubLabel {
+    name: String,
+}
+
+fn normalize_github_issue(node: GitHubIssue, config: &Settings) -> Issue {
+    let mut resolved_state = None;
+
+    let labels: Vec<String> = node
+        .labels
+        .unwrap_or_default()
+        .into_iter()
+        .map(|l| l.name)
+        .collect();
+
+    // Check labels against active_states first
+    for label in &labels {
+        if config
+            .tracker
+            .active_states
+            .iter()
+            .any(|s| s.to_lowercase() == label.to_lowercase())
+        {
+            resolved_state = config
+                .tracker
+                .active_states
+                .iter()
+                .find(|s| s.to_lowercase() == label.to_lowercase())
+                .cloned();
+            break;
+        }
+    }
+
+    // Then check against terminal_states if not found in active_states
+    if resolved_state.is_none() {
+        for label in &labels {
+            if config
+                .tracker
+                .terminal_states
+                .iter()
+                .any(|s| s.to_lowercase() == label.to_lowercase())
+            {
+                resolved_state = config
+                    .tracker
+                    .terminal_states
+                    .iter()
+                    .find(|s| s.to_lowercase() == label.to_lowercase())
+                    .cloned();
+                break;
+            }
+        }
+    }
+
+    // Default based on GitHub's native open/closed state
+    let state = resolved_state.unwrap_or_else(|| {
+        if node.state.to_lowercase() == "closed" {
+            config
+                .tracker
+                .terminal_states
+                .first()
+                .cloned()
+                .unwrap_or_else(|| "Done".to_string())
+        } else {
+            config
+                .tracker
+                .active_states
+                .first()
+                .cloned()
+                .unwrap_or_else(|| "Todo".to_string())
+        }
+    });
+
+    let assignee_id = node.assignee.map(|a| a.login);
+    let assigned_to_worker = match (config.tracker.assignee.as_deref(), assignee_id.as_deref()) {
+        (Some(filter), Some(id)) => filter.to_lowercase() == id.to_lowercase(),
+        (Some(_), None) => false,
+        _ => true,
+    };
+
+    let branch_name = format!("feature/issue-{}", node.number);
+
+    Issue {
+        id: node.number.to_string(),
+        identifier: node.number.to_string(),
+        title: node.title,
+        description: node.body,
+        priority: None,
+        state,
+        branch_name: Some(branch_name),
+        url: Some(node.html_url),
+        assignee_id,
+        blocked_by: vec![],
+        labels,
+        assigned_to_worker,
+        created_at: Some(node.created_at),
+        updated_at: Some(node.updated_at),
+    }
+}
+
+async fn fetch_candidate_issues_github(config: &Settings) -> Result<Vec<Issue>, String> {
+    let client = reqwest::Client::new();
+    let api_key = config
+        .tracker
+        .api_key
+        .as_deref()
+        .ok_or("GitHub API token is missing")?;
+
+    let mut all_issues = Vec::new();
+    let mut page = 1;
+
+    loop {
+        let url = format!(
+            "{}/repos/{}/issues?state=all&per_page=50&page={}",
+            config.tracker.endpoint, config.tracker.project_slug, page
+        );
+
+        let res = client
+            .get(&url)
+            .header("Authorization", format!("Bearer {}", api_key))
+            .header("User-Agent", "skrvm")
+            .header("Accept", "application/vnd.github+json")
+            .send()
+            .await
+            .map_err(|e| format!("GitHub API request failed: {}", e))?;
+
+        if !res.status().is_success() {
+            return Err(format!(
+                "GitHub Issues API failed with status: {}",
+                res.status()
+            ));
+        }
+
+        let nodes: Vec<GitHubIssue> = res
+            .json()
+            .await
+            .map_err(|e| format!("Failed to parse GitHub response: {}", e))?;
+
+        let count = nodes.len();
+        if count == 0 {
+            break;
+        }
+
+        for node in nodes {
+            if node.pull_request.is_some() {
+                continue; // Ignore pull requests
+            }
+            let normalized = normalize_github_issue(node, config);
+            all_issues.push(normalized);
+        }
+
+        page += 1;
+    }
+
+    Ok(all_issues)
+}
+
+async fn fetch_issue_states_by_ids_github(
+    config: &Settings,
+    ids: &[String],
+) -> Result<Vec<Issue>, String> {
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let client = reqwest::Client::new();
+    let api_key = config
+        .tracker
+        .api_key
+        .as_deref()
+        .ok_or("GitHub API token is missing")?;
+
+    let mut result = Vec::new();
+    for id in ids {
+        let url = format!(
+            "{}/repos/{}/issues/{}",
+            config.tracker.endpoint, config.tracker.project_slug, id
+        );
+
+        let res = client
+            .get(&url)
+            .header("Authorization", format!("Bearer {}", api_key))
+            .header("User-Agent", "skrvm")
+            .header("Accept", "application/vnd.github+json")
+            .send()
+            .await
+            .map_err(|e| format!("GitHub request failed for issue {}: {}", id, e))?;
+
+        if res.status().is_success() {
+            let node: GitHubIssue = res
+                .json()
+                .await
+                .map_err(|e| format!("Failed to parse GitHub response: {}", e))?;
+            if node.pull_request.is_none() {
+                result.push(normalize_github_issue(node, config));
+            }
+        }
+    }
+
+    // Sort to match order of input ids best-effort
+    result.sort_by(|a, b| {
+        let idx_a = ids.iter().position(|x| x == &a.id).unwrap_or(usize::MAX);
+        let idx_b = ids.iter().position(|x| x == &b.id).unwrap_or(usize::MAX);
+        idx_a.cmp(&idx_b)
+    });
+
+    Ok(result)
+}
+
+async fn fetch_issues_by_states_github(
+    config: &Settings,
+    state_names: &[String],
+) -> Result<Vec<Issue>, String> {
+    if state_names.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let all = fetch_candidate_issues_github(config).await?;
+    let filtered: Vec<Issue> = all
+        .into_iter()
+        .filter(|issue| {
+            state_names
+                .iter()
+                .any(|s| s.to_lowercase() == issue.state.to_lowercase())
+        })
+        .collect();
+
+    Ok(filtered)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1184,5 +1448,50 @@ mod tests {
         assert_eq!(issue.blocked_by[0].id, "10002");
         assert_eq!(issue.blocked_by[0].identifier, "PROJ-124");
         assert_eq!(issue.blocked_by[0].state, Some("In Progress".to_string()));
+    }
+
+    #[test]
+    fn test_normalize_github_issue() {
+        let raw_json = r#"{
+            "number": 42,
+            "title": "Fix alignment",
+            "body": "The alignment is off",
+            "state": "open",
+            "html_url": "https://github.com/drew-simmons/skrvm/issues/42",
+            "assignee": {
+                "login": "drew-simmons"
+            },
+            "labels": [
+                {
+                    "name": "In Progress"
+                }
+            ],
+            "created_at": "2026-05-30T12:00:00Z",
+            "updated_at": "2026-05-30T12:30:00Z",
+            "pull_request": null
+        }"#;
+
+        let config = Settings {
+            tracker: crate::config::TrackerConfig {
+                kind: "github".to_string(),
+                active_states: vec!["Todo".to_string(), "In Progress".to_string()],
+                terminal_states: vec!["Done".to_string()],
+                assignee: Some("drew-simmons".to_string()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let node: GitHubIssue = serde_json::from_str(raw_json).unwrap();
+        let issue = normalize_github_issue(node, &config);
+
+        assert_eq!(issue.id, "42");
+        assert_eq!(issue.identifier, "42");
+        assert_eq!(issue.title, "Fix alignment");
+        assert_eq!(issue.description, Some("The alignment is off".to_string()));
+        assert_eq!(issue.state, "In Progress");
+        assert_eq!(issue.assignee_id, Some("drew-simmons".to_string()));
+        assert_eq!(issue.assigned_to_worker, true);
+        assert_eq!(issue.labels, vec!["In Progress".to_string()]);
     }
 }
