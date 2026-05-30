@@ -13,7 +13,7 @@
         {
           "type": "toml",
           "path": "src-tauri/Cargo.toml",
-          "tomlpath": "package.version"
+          "jsonpath": "$.package.version"
         }
       ]
     }
