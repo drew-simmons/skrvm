@@ -441,6 +441,7 @@ function App() {
       {/* Premium Title Header */}
       <header className="header-bar">
         <div className="brand-section">
+          <img src="/logo.png" alt="Skrvm Logo" className="brand-logo" />
           <div className="pulse-dot"></div>
           <h1 className="brand-title">Skrvm Orchestrator Console</h1>
         </div>

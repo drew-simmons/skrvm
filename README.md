@@ -1,5 +1,7 @@
 # Skrvm Orchestrator 🎛️
 
+![Skrvm Architecture Flow Banner](public/hero.png)
+
 > **skrvm** (pronounced _scrum_) is a state-of-the-art desktop coding agent
 > orchestrator built on **Tauri v2**, **React 19**, **TypeScript**, and
 > **Rust**.

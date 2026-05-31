@@ -80,6 +80,13 @@ body {
   gap: 0.6rem;
 }
 
+.brand-logo {
+  height: 22px;
+  width: 22px;
+  object-fit: contain;
+  border-radius: 4px;
+}
+
 .pulse-dot {
   width: 8px;
   height: 8px;
