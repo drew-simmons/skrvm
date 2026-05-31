@@ -227,4 +227,43 @@ Elite agent: {{ issue.title }}"#;
         assert_eq!(workflow.config.tracker.project_slug, "TEST");
         assert_eq!(workflow.prompt_template, "Elite agent: {{ issue.title }}");
     }
+
+    #[test]
+    fn test_parse_workflow_aliases() {
+        let content_agy = r#"---
+tracker:
+  kind: "memory"
+  project_slug: "TEST"
+agy:
+  command: "agy run"
+  thread_sandbox: "custom-sandbox"
+---
+Prompt"#;
+        let workflow_agy = parse_workflow(content_agy, Path::new("dummy/WORKFLOW.md")).unwrap();
+        assert_eq!(workflow_agy.config.codex.command, "agy run");
+        assert_eq!(workflow_agy.config.codex.thread_sandbox, "custom-sandbox");
+
+        let content_kiro = r#"---
+tracker:
+  kind: "memory"
+  project_slug: "TEST"
+kiro:
+  command: "kiro run"
+---
+Prompt"#;
+        let workflow_kiro = parse_workflow(content_kiro, Path::new("dummy/WORKFLOW.md")).unwrap();
+        assert_eq!(workflow_kiro.config.codex.command, "kiro run");
+
+        let content_antigravity = r#"---
+tracker:
+  kind: "memory"
+  project_slug: "TEST"
+antigravity:
+  command: "agy run"
+---
+Prompt"#;
+        let workflow_antigravity =
+            parse_workflow(content_antigravity, Path::new("dummy/WORKFLOW.md")).unwrap();
+        assert_eq!(workflow_antigravity.config.codex.command, "agy run");
+    }
 }

@@ -67,7 +67,7 @@ mod tests {
     #[test]
     fn test_validate_workspace_cwd_safe() {
         let temp_root = std::env::temp_dir().join(format!(
-            "skrvm_root_{}",
+            "skrvm_root_safe_{}",
             chrono::Utc::now().timestamp_millis()
         ));
         std::fs::create_dir_all(&temp_root).unwrap();
@@ -85,7 +85,7 @@ mod tests {
     #[test]
     fn test_validate_workspace_cwd_unsafe_traversal() {
         let temp_root = std::env::temp_dir().join(format!(
-            "skrvm_root_{}",
+            "skrvm_root_unsafe_{}",
             chrono::Utc::now().timestamp_millis()
         ));
         std::fs::create_dir_all(&temp_root).unwrap();
@@ -102,7 +102,7 @@ mod tests {
     #[test]
     fn test_validate_workspace_cwd_identical_to_root() {
         let temp_root = std::env::temp_dir().join(format!(
-            "skrvm_root_{}",
+            "skrvm_root_identical_{}",
             chrono::Utc::now().timestamp_millis()
         ));
         std::fs::create_dir_all(&temp_root).unwrap();

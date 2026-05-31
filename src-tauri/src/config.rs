@@ -160,6 +160,7 @@ pub struct Settings {
     pub polling: PollingConfig,
     pub workspace: WorkspaceConfig,
     pub agent: AgentConfig,
+    #[serde(alias = "kiro", alias = "antigravity", alias = "agy")]
     pub codex: CodexConfig,
     pub hooks: HooksConfig,
     pub server: ServerConfig,
@@ -207,6 +208,15 @@ impl Settings {
             expanded
         };
         self.workspace.root = absolute_path.to_string_lossy().to_string();
+
+        // Smart command auto-detection if it's still the default "codex app-server"
+        if self.codex.command == "codex app-server" {
+            if is_cli_installed("agy") {
+                self.codex.command = "agy run".to_string();
+            } else if is_cli_installed("kiro") {
+                self.codex.command = "kiro run".to_string();
+            }
+        }
     }
 
     /// Performs preflight validation
@@ -295,4 +305,17 @@ fn expand_path(val: &str) -> PathBuf {
     } else {
         PathBuf::from(val)
     }
+}
+
+/// Checks if a CLI command exists in the system PATH
+fn is_cli_installed(name: &str) -> bool {
+    if let Some(paths) = env::var_os("PATH") {
+        for path in env::split_paths(&paths) {
+            let p = path.join(name);
+            if p.is_file() {
+                return true;
+            }
+        }
+    }
+    false
 }

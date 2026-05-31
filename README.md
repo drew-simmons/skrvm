@@ -51,6 +51,31 @@ graph TD
 
 ---
 
+## 🔌 Supported Integrations & Compatibility
+
+Skrvm orchestrates a unified runtime for diverse coding agents and external
+issue trackers:
+
+### Coding Agents
+
+| Agent / CLI                 | Configuration Block  | Default Command            | Protocol / Handshake  |
+| :-------------------------- | :------------------- | :------------------------- | :-------------------- |
+| **Antigravity CLI** (`agy`) | `agy`, `antigravity` | `agy run` (Auto-detected)  | JSON-RPC over `stdio` |
+| **Kiro** (`kiro`)           | `kiro`               | `kiro run` (Auto-detected) | JSON-RPC over `stdio` |
+| **Codex** (`codex`)         | `codex`              | `codex app-server`         | JSON-RPC over `stdio` |
+
+### Issue Trackers & VCS
+
+| Service    | Tracker `kind` | Authentication Token | Capabilities                                                     |
+| :--------- | :------------- | :------------------- | :--------------------------------------------------------------- |
+| **Linear** | `linear`       | `$LINEAR_API_KEY`    | Candidates polling, active filter, dynamic `linear_graphql` tool |
+| **Jira**   | `jira`         | `$JIRA_API_KEY`      | Candidates polling, active transition syncing                    |
+| **GitHub** | `github`       | `$GITHUB_TOKEN`      | Repository-linked issue tracking, branch creation                |
+| **GitLab** | `gitlab`       | `$GITLAB_TOKEN`      | Workspace integration, dynamic `gitlab_api` tool                 |
+| **Memory** | `memory`       | None                 | Zero-credentials offline sandbox, mock issue pipeline            |
+
+---
+
 ## 🏗️ System Architecture & Mechanics
 
 ### 1. The Core Orchestrator Loop (`orchestrator.rs`)

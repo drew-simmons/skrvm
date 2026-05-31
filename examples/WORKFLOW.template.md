@@ -48,9 +48,16 @@ agent:
   # Maximum backoff delay for retrying failed agents (in milliseconds)
   max_retry_backoff_ms: 300000
 
-codex:
+# Agent Configuration.
+# You can use "agy", "antigravity", "kiro", or "codex" as the block key.
+agy:
   # Command used by the runner to start the background coding agent.
-  command: "kiro run"
+  # If left as default, Skrvm auto-detects installed commands in your PATH:
+  #   1. "agy run" (Antigravity CLI)
+  #   2. "kiro run"
+  #   3. "codex app-server"
+  command: "agy run"
+
   # The default thread sandbox security level
   thread_sandbox: "workspace-write"
   # Maximum execution time for a single turn (in milliseconds)

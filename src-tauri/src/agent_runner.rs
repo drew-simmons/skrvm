@@ -67,7 +67,7 @@ pub async fn run_hook(script: &str, cwd: &Path, timeout_ms: u64) -> Result<(), S
     }
 }
 
-/// Main entry point to run a single Codex/Kiro agent session for an issue inside its workspace
+/// Main entry point to run a single Codex/Kiro/Antigravity (agy) agent session for an issue inside its workspace
 pub async fn run_agent(
     issue: Issue,
     workspace: PathBuf,
@@ -666,10 +666,13 @@ async fn execute_gitlab_api(
 ) -> Result<String, String> {
     let client = reqwest::Client::new();
 
-    let gitlab_token = std::env::var("GITLAB_PRIVATE_TOKEN")
+    let gitlab_token = std::env::var("GITLAB_TOKEN")
         .or_else(|_| std::env::var("GITLAB_TOKEN"))
         .or_else(|_| std::env::var("PRIVATE_TOKEN"))
-        .map_err(|_| "GitLab API Token is missing. Export GITLAB_PRIVATE_TOKEN or GITLAB_TOKEN in the environment.".to_string())?;
+        .map_err(|_| {
+            "GitLab API Token is missing. Export GITLAB_TOKEN or GITLAB_TOKEN in the environment."
+                .to_string()
+        })?;
 
     let gitlab_endpoint = std::env::var("GITLAB_API_ENDPOINT")
         .unwrap_or_else(|_| "https://gitlab.com/api/v4".to_string());
@@ -750,7 +753,7 @@ mod tests {
         });
 
         // Setup env variables for test
-        std::env::set_var("GITLAB_PRIVATE_TOKEN", "mock-test-token");
+        std::env::set_var("GITLAB_TOKEN", "mock-test-token");
         std::env::set_var(
             "GITLAB_API_ENDPOINT",
             format!("http://127.0.0.1:{}/api/v4", port),
