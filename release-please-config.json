@@ -4,6 +4,7 @@
     ".": {
       "package-name": "skrvm",
       "release-type": "node",
+      "include-component-in-tag": false,
       "extra-files": [
         {
           "type": "json",
