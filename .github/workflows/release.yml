@@ -28,7 +28,7 @@ jobs:
         if: ${{ steps.release.outputs.prs_created == 'true' }}
         uses: actions/checkout@v4
         with:
-          ref: ${{ fromJSON(steps.release.outputs['.--pr']).head_branch }}
+          ref: ${{ steps.release.outputs.pr != '' && fromJSON(steps.release.outputs.pr).head_branch || steps.release.outputs['.--pr'] != '' && fromJSON(steps.release.outputs['.--pr']).head_branch || '' }}
           token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Setup Python & uv
