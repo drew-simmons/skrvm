@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.0](https://github.com/drew-simmons/skrvm/compare/v0.3.0...v0.4.0) (2026-05-31)
+
+
+### Features
+
+* add antigravity support ([19da2d5](https://github.com/drew-simmons/skrvm/commit/19da2d52ee1417d6f0a80c594edb9c8a76eb0e97))
+
 ## [0.3.0](https://github.com/drew-simmons/skrvm/compare/v0.2.0...v0.3.0) (2026-05-31)
 
 ### Features
