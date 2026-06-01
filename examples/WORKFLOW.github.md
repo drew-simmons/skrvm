@@ -18,7 +18,7 @@ polling:
   interval_ms: 30000
 
 workspace:
-  root: "~/dev/skrvm-workspaces" # Parent folder for checking out sandbox workspaces
+  root: "~/dev/scratch/skrvm/workspaces" # Parent folder for checking out sandbox workspaces
 
 agent:
   max_concurrent_agents: 3

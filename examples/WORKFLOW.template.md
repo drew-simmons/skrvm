@@ -38,7 +38,7 @@ polling:
 workspace:
   # Base folder where individual ticket sandboxes will be created.
   # Supports tilde expansion (~) and env variables.
-  root: "~/dev/skrvm-workspaces"
+  root: "~/dev/scratch/skrvm/workspaces"
 
 agent:
   # Global limit on concurrent background coding agents
@@ -64,7 +64,7 @@ agy:
   turn_timeout_ms: 3600000
 
 hooks:
-  # Shell hooks run inside the issue's sandbox workspace (e.g. ~/dev/skrvm-workspaces/ENG-101)
+  # Shell hooks run inside the issue's sandbox workspace (e.g. ~/dev/scratch/skrvm/workspaces/ENG-101)
 
   # 1. Runs immediately after sandbox folder creation. Bootstraps the target project repository.
   # Example: Clones target project and sets up a ticket-specific branch:

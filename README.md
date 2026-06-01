@@ -118,10 +118,9 @@ external repositories.
 ### The Sandbox Workspace Strategy
 
 Each ticket matched by your active issue tracker is assigned a dedicated
-subdirectory within the `workspace.root` folder (e.g.
-`~/dev/skrvm-workspaces/PROJ-123`). This architecture ensures that concurrent
-workers never interfere with each other or step on a single shared codebase
-folder.
+subdirectory within the `workspace.root` folder (e.g.`~/dev/scratch/skrvm/workspaces/PROJ-123`).
+This architecture ensures that concurrent workers never interfere with each
+other or step on a single shared codebase folder.
 
 To manage and automate coding agents operating on your existing codebases,
 configure Skrvm's dynamic shell hooks:
