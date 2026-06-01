@@ -68,7 +68,7 @@ hooks:
 
   # 1. Runs immediately after sandbox folder creation. Bootstraps the target project repository.
   # Example: Clones target project and sets up a ticket-specific branch:
-  after_create: "git clone git@github.com:my-org/my-project.git . && git checkout -b feature/skrvm-{{ issue.identifier }}"
+  after_create: "git clone git@github.com:my-org/my-project.git . && git checkout -b skrvm-{{ issue.identifier }}"
 
   # 2. Runs before launching the coding agent. Prepares environment dependencies.
   before_run: "npm install"
