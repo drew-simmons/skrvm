@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.4.1](https://github.com/drew-simmons/skrvm/compare/v0.4.0...v0.4.1) (2026-06-01)
+
+
+### Bug Fixes
+
+* dependabot package ecosystem ([9c45d9b](https://github.com/drew-simmons/skrvm/commit/9c45d9b75af9551894c9187aa99a9bef784e82ee))
+* login shell ([e345f74](https://github.com/drew-simmons/skrvm/commit/e345f74beeeeb77a671ec91ef799c359dea903a1))
+
 ## [0.4.0](https://github.com/drew-simmons/skrvm/compare/v0.3.0...v0.4.0) (2026-05-31)
 
 ### Features
