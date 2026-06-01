@@ -27,7 +27,7 @@ reqwest = { version = "0.13", features = ["json"] }
 serde_yaml = "0.9"
 minijinja = { version = "2", features = ["loader"] }
 chrono = { version = "0.4", features = ["serde"] }
-dirs = "5"
+dirs = "6"
 base64 = "0.22"
 
 
