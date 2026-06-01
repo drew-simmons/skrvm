@@ -266,4 +266,42 @@ Prompt"#;
             parse_workflow(content_antigravity, Path::new("dummy/WORKFLOW.md")).unwrap();
         assert_eq!(workflow_antigravity.config.codex.command, "agy run");
     }
+
+    #[test]
+    fn test_parse_workflow_relative_command_resolution() {
+        // Create a temporary directory structure to mock a workflow file and script
+        let temp_dir = std::env::temp_dir().join(format!(
+            "skrvm_workflow_test_{}",
+            chrono::Utc::now().timestamp_millis()
+        ));
+        std::fs::create_dir_all(&temp_dir).unwrap();
+
+        let scratch_dir = temp_dir.join("scratch");
+        std::fs::create_dir_all(&scratch_dir).unwrap();
+
+        let script_file = scratch_dir.join("mock_agent.sh");
+        std::fs::write(&script_file, "#!/bin/bash\n").unwrap();
+
+        let workflow_file = temp_dir.join("WORKFLOW.md");
+        let content = r#"---
+tracker:
+  kind: "memory"
+  project_slug: "TEST"
+agy:
+  command: "./scratch/mock_agent.sh"
+---
+Prompt"#;
+
+        let workflow = parse_workflow(content, &workflow_file).unwrap();
+
+        // Assert that the relative command was resolved to an absolute path pointing to the existing script file
+        let resolved_canonical = PathBuf::from(&workflow.config.codex.command)
+            .canonicalize()
+            .unwrap();
+        let expected_canonical = script_file.canonicalize().unwrap();
+        assert_eq!(resolved_canonical, expected_canonical);
+
+        // Cleanup
+        std::fs::remove_dir_all(&temp_dir).ok();
+    }
 }

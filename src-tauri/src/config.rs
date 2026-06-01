@@ -217,6 +217,34 @@ impl Settings {
                 self.codex.command = "kiro run".to_string();
             }
         }
+
+        // If the command starts with a relative path (e.g. "./scratch/mock_agent.sh"),
+        // resolve it relative to workflow_dir or workflow_dir's parent directory
+        // so it can execute successfully inside sandboxed workspaces.
+        if self.codex.command.starts_with("./") || self.codex.command.starts_with("../") {
+            let parts: Vec<&str> = self.codex.command.splitn(2, ' ').collect();
+            let exec_path = PathBuf::from(parts[0]);
+
+            let mut resolved_path = None;
+            let path_in_workflow_dir = workflow_dir.join(&exec_path);
+            if path_in_workflow_dir.exists() {
+                resolved_path = Some(path_in_workflow_dir);
+            } else if let Some(parent) = workflow_dir.parent() {
+                let path_in_parent = parent.join(&exec_path);
+                if path_in_parent.exists() {
+                    resolved_path = Some(path_in_parent);
+                }
+            }
+
+            if let Some(abs_exec) = resolved_path {
+                let abs_exec_str = abs_exec.to_string_lossy().to_string();
+                if parts.len() > 1 {
+                    self.codex.command = format!("{} {}", abs_exec_str, parts[1]);
+                } else {
+                    self.codex.command = abs_exec_str;
+                }
+            }
+        }
     }
 
     /// Performs preflight validation

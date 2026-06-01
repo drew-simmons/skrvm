@@ -58,6 +58,7 @@ orchestrator to resolve ticket **{{ issue.identifier }}**.
   verification unless directly affected by new modifications.
 - **Handoff**: Do not end the turn prematurely unless a hard external blocker
   (missing credentials or tooling) exists.
+
 {% endif %}
 
 ### Task Overview

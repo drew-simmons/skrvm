@@ -76,13 +76,27 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             // Locate WORKFLOW.md in CWD, with fallback to src-tauri/WORKFLOW.md
-            let mut workflow_path = std::env::current_dir()
+            let current_dir = std::env::current_dir()
                 .unwrap_or_else(|_| PathBuf::from("."));
-            workflow_path.push("WORKFLOW.md");
+
+            // Check if current directory is inside src-tauri (common in tauri dev workflows)
+            let mut workflow_path = if current_dir.ends_with("src-tauri") {
+                if let Some(parent) = current_dir.parent() {
+                    let root_path = parent.join("WORKFLOW.md");
+                    if root_path.exists() {
+                        root_path
+                    } else {
+                        current_dir.join("WORKFLOW.md")
+                    }
+                } else {
+                    current_dir.join("WORKFLOW.md")
+                }
+            } else {
+                current_dir.join("WORKFLOW.md")
+            };
 
             if !workflow_path.exists() {
-                let mut fallback_path = std::env::current_dir()
-                    .unwrap_or_else(|_| PathBuf::from("."));
+                let mut fallback_path = current_dir.clone();
                 fallback_path.push("src-tauri");
                 fallback_path.push("WORKFLOW.md");
                 if fallback_path.exists() {
