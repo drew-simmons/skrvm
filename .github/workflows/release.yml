@@ -26,7 +26,7 @@ jobs:
 
       - name: Checkout Release PR Branch
         if: ${{ steps.release.outputs.prs_created == 'true' }}
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           ref: ${{ steps.release.outputs.pr != '' && fromJSON(steps.release.outputs.pr).head_branch || steps.release.outputs['.--pr'] != '' && fromJSON(steps.release.outputs['.--pr']).head_branch || '' }}
           token: ${{ secrets.GITHUB_TOKEN }}
@@ -68,7 +68,7 @@ jobs:
     runs-on: ${{ matrix.platform }}
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Install pnpm
         uses: pnpm/action-setup@v6
