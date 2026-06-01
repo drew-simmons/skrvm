@@ -58,11 +58,11 @@ issue trackers:
 
 ### Coding Agents
 
-| Agent / CLI                 | Configuration Block  | Default Command            | Protocol / Handshake  |
-| :-------------------------- | :------------------- | :------------------------- | :-------------------- |
-| **Antigravity CLI** (`agy`) | `agy`, `antigravity` | `agy run` (Auto-detected)  | JSON-RPC over `stdio` |
-| **Kiro** (`kiro`)           | `kiro`               | `kiro run` (Auto-detected) | JSON-RPC over `stdio` |
-| **Codex** (`codex`)         | `codex`              | `codex app-server`         | JSON-RPC over `stdio` |
+| Agent / CLI                 | Configuration Block            | Default Command    | Protocol / Handshake  |
+| :-------------------------- | :----------------------------- | :----------------- | :-------------------- |
+| **Antigravity CLI** (`agy`) | `agents`, `agy`, `antigravity` | `codex app-server` | JSON-RPC over `stdio` |
+| **Kiro** (`kiro`)           | `agents`, `kiro`               | `codex app-server` | JSON-RPC over `stdio` |
+| **Codex** (`codex`)         | `agents`, `codex`              | `codex app-server` | JSON-RPC over `stdio` |
 
 ### Issue Trackers & VCS
 
@@ -208,8 +208,8 @@ agent:
   max_turns: 20
   max_retry_backoff_ms: 300000
 
-codex:
-  command: "codex app-server"             # Terminal command to launch the agent
+agents:
+  command: "codex app-server"             # Terminal command to launch the agent (e.g. codex, kiro, agy)
   thread_sandbox: "workspace-write"
   turn_timeout_ms: 3600000
 

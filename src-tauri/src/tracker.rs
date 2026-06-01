@@ -1169,26 +1169,10 @@ fn normalize_github_issue(node: GitHubIssue, config: &Settings) -> Issue {
         .map(|l| l.name)
         .collect();
 
-    // Check labels against active_states first
-    for label in &labels {
-        if config
-            .tracker
-            .active_states
-            .iter()
-            .any(|s| s.to_lowercase() == label.to_lowercase())
-        {
-            resolved_state = config
-                .tracker
-                .active_states
-                .iter()
-                .find(|s| s.to_lowercase() == label.to_lowercase())
-                .cloned();
-            break;
-        }
-    }
-
-    // Then check against terminal_states if not found in active_states
-    if resolved_state.is_none() {
+    // GitHub's closed state is authoritative. Labels can be stale after merge.
+    if node.state.to_lowercase() == "closed" {
+        resolved_state = config.tracker.terminal_states.first().cloned();
+    } else {
         for label in &labels {
             if config
                 .tracker
@@ -1199,6 +1183,26 @@ fn normalize_github_issue(node: GitHubIssue, config: &Settings) -> Issue {
                 resolved_state = config
                     .tracker
                     .terminal_states
+                    .iter()
+                    .find(|s| s.to_lowercase() == label.to_lowercase())
+                    .cloned();
+                break;
+            }
+        }
+    }
+
+    // Then check active labels for still-open issues.
+    if resolved_state.is_none() {
+        for label in &labels {
+            if config
+                .tracker
+                .active_states
+                .iter()
+                .any(|s| s.to_lowercase() == label.to_lowercase())
+            {
+                resolved_state = config
+                    .tracker
+                    .active_states
                     .iter()
                     .find(|s| s.to_lowercase() == label.to_lowercase())
                     .cloned();
@@ -1301,7 +1305,14 @@ async fn fetch_candidate_issues_github(config: &Settings) -> Result<Vec<Issue>, 
                 continue; // Ignore pull requests
             }
             let normalized = normalize_github_issue(node, config);
-            all_issues.push(normalized);
+            if config
+                .tracker
+                .active_states
+                .iter()
+                .any(|s| s.to_lowercase() == normalized.state.to_lowercase())
+            {
+                all_issues.push(normalized);
+            }
         }
 
         page += 1;
@@ -1493,5 +1504,78 @@ mod tests {
         assert_eq!(issue.assignee_id, Some("drew-simmons".to_string()));
         assert_eq!(issue.assigned_to_worker, true);
         assert_eq!(issue.labels, vec!["In Progress".to_string()]);
+    }
+
+    #[test]
+    fn test_normalize_github_closed_issue_is_terminal() {
+        let raw_json = r#"{
+            "number": 11,
+            "title": "Bump setup-node",
+            "body": null,
+            "state": "closed",
+            "html_url": "https://github.com/drew-simmons/skrvm/issues/11",
+            "assignee": null,
+            "labels": [
+                {
+                    "name": "In Progress"
+                }
+            ],
+            "created_at": "2026-05-30T12:00:00Z",
+            "updated_at": "2026-06-01T19:51:50Z",
+            "pull_request": null
+        }"#;
+
+        let config = Settings {
+            tracker: crate::config::TrackerConfig {
+                kind: "github".to_string(),
+                active_states: vec!["Todo".to_string(), "In Progress".to_string()],
+                terminal_states: vec!["Done".to_string()],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let node: GitHubIssue = serde_json::from_str(raw_json).unwrap();
+        let issue = normalize_github_issue(node, &config);
+
+        assert_eq!(issue.state, "Done");
+    }
+
+    #[test]
+    fn test_normalize_github_terminal_label_wins_over_active_label() {
+        let raw_json = r#"{
+            "number": 12,
+            "title": "Bump pnpm/action-setup",
+            "body": null,
+            "state": "open",
+            "html_url": "https://github.com/drew-simmons/skrvm/issues/12",
+            "assignee": null,
+            "labels": [
+                {
+                    "name": "Todo"
+                },
+                {
+                    "name": "Done"
+                }
+            ],
+            "created_at": "2026-05-30T12:00:00Z",
+            "updated_at": "2026-06-01T17:23:01Z",
+            "pull_request": null
+        }"#;
+
+        let config = Settings {
+            tracker: crate::config::TrackerConfig {
+                kind: "github".to_string(),
+                active_states: vec!["Todo".to_string(), "In Progress".to_string()],
+                terminal_states: vec!["Done".to_string()],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let node: GitHubIssue = serde_json::from_str(raw_json).unwrap();
+        let issue = normalize_github_issue(node, &config);
+
+        assert_eq!(issue.state, "Done");
     }
 }

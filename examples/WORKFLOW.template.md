@@ -49,14 +49,17 @@ agent:
   max_retry_backoff_ms: 300000
 
 # Agent Configuration.
-# You can use "agy", "antigravity", "kiro", or "codex" as the block key.
-agy:
+# You can use "agents", "agy", "antigravity", "kiro", or "codex" as the block key.
+agents:
   # Command used by the runner to start the background coding agent.
-  # If left as default, Skrvm auto-detects installed commands in your PATH:
-  #   1. "agy run" (Antigravity CLI)
-  #   2. "kiro run"
-  #   3. "codex app-server"
-  command: "agy run"
+  # For jsonrpc: e.g. "codex app-server", "kiro-cli acp"
+  # For oneshot: e.g. "agy --print -", "kiro-cli chat"
+  command: "codex app-server"
+
+  # Communication protocol to use:
+  # - "jsonrpc" (default): Performs multi-turn background JSON-RPC handshake (Codex, Kiro ACP)
+  # - "oneshot": Pipes the rendered prompt directly to stdin and runs CLI to completion (agy, Kiro TUI chat)
+  protocol: "jsonrpc"
 
   # The default thread sandbox security level
   thread_sandbox: "workspace-write"
@@ -74,7 +77,7 @@ hooks:
   before_run: "pnpm install"
 
   # 3. Runs after each successful turn. Commits and pushes progress back to origin.
-  after_run: "git add . && git commit -m 'skrvm: turn progression progress' --allow-empty && git push origin HEAD"
+  after_run: "git add . && git commit -m 'skrvm: turn progression progress' --allow-empty && git push -u origin HEAD:skrvm-{{ issue.identifier }}"
 
   # Timeout for each shell hook (in milliseconds)
   timeout_ms: 120000

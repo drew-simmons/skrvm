@@ -16,6 +16,38 @@ pub fn sanitize_workspace_key(identifier: &str) -> String {
         .collect()
 }
 
+/// Formats and sanitizes a workspace directory name using the issue identifier and title.
+/// Creates a lowercase, alphanumeric-and-hyphen-only slug (e.g., "11-fix-local-directory-names").
+pub fn get_workspace_dir_name(identifier: &str, title: &str) -> String {
+    let combined = format!("{}-{}", identifier, title);
+    let mut slug = String::new();
+    let mut last_char_was_separator = false;
+
+    for c in combined.chars() {
+        if c.is_ascii_alphanumeric() {
+            slug.push(c.to_ascii_lowercase());
+            last_char_was_separator = false;
+        } else if (c.is_ascii_whitespace()
+            || c == '-'
+            || c == '_'
+            || c == '/'
+            || c == '\\'
+            || c == '.')
+            && !last_char_was_separator
+            && !slug.is_empty()
+        {
+            slug.push('-');
+            last_char_was_separator = true;
+        }
+    }
+
+    let mut trimmed = slug.trim_end_matches('-').to_string();
+    if trimmed.is_empty() {
+        trimmed = sanitize_workspace_key(identifier);
+    }
+    trimmed
+}
+
 /// Validates that the given workspace directory is safely situated inside the workspace root
 /// and returns its canonicalized absolute path.
 pub fn validate_workspace_cwd(workspace: &Path, workspace_root: &Path) -> Result<PathBuf, String> {
@@ -62,6 +94,23 @@ mod tests {
             "feature_cool-stuff"
         );
         assert_eq!(sanitize_workspace_key("issues..123?"), "issues..123_");
+    }
+
+    #[test]
+    fn test_get_workspace_dir_name() {
+        assert_eq!(
+            get_workspace_dir_name("11", "Test Ticket"),
+            "11-test-ticket"
+        );
+        assert_eq!(
+            get_workspace_dir_name("PROJ-12", "Fix local directory names!"),
+            "proj-12-fix-local-directory-names"
+        );
+        assert_eq!(
+            get_workspace_dir_name("13", "Bug (fix) #123: emoji 🚀 !!"),
+            "13-bug-fix-123-emoji"
+        );
+        assert_eq!(get_workspace_dir_name("14", "..."), "14");
     }
 
     #[test]

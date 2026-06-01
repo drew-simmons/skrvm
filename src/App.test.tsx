@@ -257,6 +257,85 @@ describe("Skrvm Frontend React App", () => {
     // Check count in filter badge
     expect(screen.getByText("3 items left")).toBeInTheDocument();
   });
+
+  it("should dynamically parse and render markdown checklists for non-demo issues and hide the sandbox", async () => {
+    const mockState = {
+      poll_interval_ms: 10000,
+      max_concurrent_agents: 2,
+      running: {
+        "dynamic-id": {
+          pid: 54321,
+          identifier: "42",
+          issue: {
+            id: "dynamic-id",
+            identifier: "42",
+            title: "Dynamic checklist issue",
+            description:
+              "### 1. Research Phase\n- [x] Read files\n- [ ] Analyze styles\n\n### 2. Dev Phase\n- [ ] Code dynamic list",
+            priority: 1,
+            state: "In Progress",
+            branch_name: "feature/dynamic-checklist",
+            url: null,
+            assignee_id: "me",
+            blocked_by: [],
+            labels: [],
+            assigned_to_worker: true,
+            created_at: null,
+            updated_at: null,
+          },
+          worker_host: "127.0.0.1",
+          workspace_path: "/dummy/workspaces/42",
+          session_id: "sess-dynamic",
+          last_event: "turn_completed",
+          last_message: "Step complete",
+          last_event_at: "2026-05-30T12:00:00Z",
+          input_tokens: 10,
+          output_tokens: 10,
+          total_tokens: 20,
+          turn_count: 1,
+          retry_attempt: 0,
+          started_at: "2026-05-30T12:00:00Z",
+        },
+      },
+      completed: [],
+      claimed: ["dynamic-id"],
+      blocked: {},
+      retry_attempts: {},
+      codex_totals: {
+        input_tokens: 10,
+        output_tokens: 10,
+        total_tokens: 20,
+        seconds_running: 5.0,
+      },
+      last_error: null,
+    };
+
+    vi.mocked(invoke).mockResolvedValue(mockState);
+
+    await act(async () => {
+      render(<App />);
+    });
+
+    // Check that the numeric identifier is rendered with hash in the card
+    expect(screen.getByText("#42")).toBeInTheDocument();
+
+    const card = screen.getByText("Dynamic checklist issue");
+    await act(async () => {
+      fireEvent.click(card);
+    });
+
+    // 1. Check headings are rendered in description and checklist
+    expect(screen.getAllByText("1. Research Phase")[0]).toBeInTheDocument();
+    expect(screen.getAllByText("2. Dev Phase")[0]).toBeInTheDocument();
+
+    // 2. Check steps are parsed
+    expect(screen.getByText("Read files")).toBeInTheDocument();
+    expect(screen.getByText("Analyze styles")).toBeInTheDocument();
+    expect(screen.getByText("Code dynamic list")).toBeInTheDocument();
+
+    // 3. Verify TodoMVC sandbox is NOT rendered
+    expect(screen.queryByText("React • TodoMVC (Sandbox)")).not.toBeInTheDocument();
+  });
 });
 
 // Mock type check support helper

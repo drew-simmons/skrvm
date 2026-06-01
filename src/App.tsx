@@ -77,6 +77,7 @@ interface OrchestratorState {
   claimed: string[];
   blocked: { [key: string]: BlockedEntry };
   retry_attempts: { [key: string]: RetryEntry };
+  backlog: Issue[];
   codex_totals: CodexTotals;
   last_error: string | null;
 }
@@ -105,6 +106,285 @@ function App() {
   const [operatorInput, setOperatorInput] = useState<string>("");
   const [isReloading, setIsReloading] = useState<boolean>(false);
   const [reloadMsg, setReloadMsg] = useState<string | null>(null);
+
+  // Setup Wizard State
+  const [isSetupOpen, setIsSetupOpen] = useState<boolean>(false);
+  const [setupStep, setSetupStep] = useState<number>(1);
+  const [isSavingWorkflow, setIsSavingWorkflow] = useState<boolean>(false);
+
+  // Form states
+  const [trackerKind, setTrackerKind] = useState<string>("github");
+  const [trackerEndpoint, setTrackerEndpoint] = useState<string>("https://api.github.com");
+  const [trackerApiKey, setTrackerApiKey] = useState<string>("$GITHUB_TOKEN");
+  const [trackerProjectSlug, setTrackerProjectSlug] = useState<string>("");
+  const [trackerAssignee, setTrackerAssignee] = useState<string>("$GITHUB_ASSIGNEE");
+  const [trackerActiveStates, setTrackerActiveStates] = useState<string>("Todo, In Progress");
+  const [trackerTerminalStates, setTrackerTerminalStates] = useState<string>("Closed, Done");
+
+  const [pollingInterval, setPollingInterval] = useState<number>(30000);
+  const [workspaceRoot, setWorkspaceRoot] = useState<string>("~/dev/scratch/skrvm/workspaces");
+
+  const [agentMaxConcurrent, setAgentMaxConcurrent] = useState<number>(3);
+  const [agentMaxTurns, setAgentMaxTurns] = useState<number>(20);
+  const [agentMaxRetryBackoff, setAgentMaxRetryBackoff] = useState<number>(300000);
+
+  const [agentSelection, setAgentSelection] = useState<"codex" | "kiro" | "antigravity" | "custom">(
+    "codex",
+  );
+  const [agentCommand, setAgentCommand] = useState<string>("codex app-server");
+  const [agentProtocol, setAgentProtocol] = useState<string>("jsonrpc");
+  const [agentThreadSandbox, setAgentThreadSandbox] = useState<string>("workspace-write");
+  const [agentTurnTimeout, setAgentTurnTimeout] = useState<number>(3600000);
+
+  const [hooksAfterCreate, setHooksAfterCreate] = useState<string>(
+    "git clone git@github.com:{{ project_slug }}.git . && git checkout -b skrvm-{{ issue.identifier }}",
+  );
+  const [hooksBeforeRun, setHooksBeforeRun] = useState<string>("pnpm install");
+  const [hooksAfterRun, setHooksAfterRun] = useState<string>(
+    "git add . && git commit -m 'skrvm: turn progression progress' --allow-empty && git push -u origin HEAD:skrvm-{{ issue.identifier }}",
+  );
+  const [hooksBeforeRemove, setHooksBeforeRemove] = useState<string>("");
+  const [hooksTimeout, setHooksTimeout] = useState<number>(120000);
+
+  const [promptTemplate, setPromptTemplate] =
+    useState<string>(`You are Antigravity, an elite agentic coding assistant spawned by the Skrvm
+orchestrator to resolve GitHub Issue **#{{ issue.identifier }}**.
+
+{% if attempt > 0 %}
+
+### Continuation Context
+
+- **Retry Attempt**: #{{ attempt }} (the ticket remains in an active state).
+- **Strategy**: Resume directly from the current workspace state instead of
+  restarting investigation.
+- **Efficiency**: Avoid repeating already completed planning, implementation, or
+  verification unless directly affected by new modifications.
+- **Handoff**: Do not end the turn prematurely unless a hard external blocker
+  (missing credentials or tooling) exists.
+
+{% endif %}
+
+### Task Overview
+
+- **Title**: {{ issue.title }}
+- **Status**: {{ issue.state }}
+
+#### Description
+
+\`\`\`markdown
+{{ issue.description }}
+\`\`\`
+
+### Default Posture & Execution Guidelines
+
+- **Reproduce First**: Always replicate the issue, bug signal, or target
+  behavior before writing any code changes. Make sure your fix target is
+  completely explicit and verified first.
+- **Surgical Boundaries**: Touch only what is strictly necessary to solve the
+  issue. If you discover dead code, unrelated formatting issues, or major
+  refactoring opportunities, do not modify them. Instead, log them in your final
+  report or file a separate follow-up ticket.
+- **Persistent Skrvm Workpad**:
+  - Treat a single persistent comment in the issue tracker (starting with the
+    header \`## Skrvm Workpad\`) as the source of truth for the task's state.
+  - If a Workpad comment does not exist yet, create one. If it does exist,
+    update it at the start and end of every turn. Do not post separate progress
+    or "done" comments.
+  - Use the Workpad to track your current checklist, verification steps, and any
+    obstacles.
+
+### Technical Guidelines
+
+1. Analyze the sandbox workspace directory.
+2. Code your solutions cleanly, respecting existing code styles.
+3. Validate and verify your changes before completing your turn.
+4. Update the persistent tracker Workpad comment to document completed items and
+  test results.
+5. Once all verification checks pass and the issue is resolved, conclude the
+  turn.`);
+
+  // Auto-populate defaults when tracker kind changes
+  const handleTrackerKindChange = (kind: string) => {
+    setTrackerKind(kind);
+    if (kind === "github") {
+      setTrackerEndpoint("https://api.github.com");
+      setTrackerApiKey("$GITHUB_TOKEN");
+      setTrackerActiveStates("Todo, In Progress");
+      setTrackerTerminalStates("Closed, Done");
+    } else if (kind === "jira") {
+      setTrackerEndpoint("https://your-domain.atlassian.net");
+      setTrackerApiKey("$JIRA_API_KEY");
+      setTrackerActiveStates("Todo, In Progress");
+      setTrackerTerminalStates("Closed, Done");
+    } else if (kind === "linear") {
+      setTrackerEndpoint("https://api.linear.app/v1/graphql");
+      setTrackerApiKey("$LINEAR_API_KEY");
+      setTrackerActiveStates("Todo, In Progress");
+      setTrackerTerminalStates("Done, Cancelled");
+    } else if (kind === "memory") {
+      setTrackerEndpoint("");
+      setTrackerApiKey("");
+      setTrackerActiveStates("Todo, In Progress");
+      setTrackerTerminalStates("Done");
+    }
+  };
+
+  // Auto-populate defaults when agent selection changes
+  const handleAgentSelectionChange = (selection: "codex" | "kiro" | "antigravity" | "custom") => {
+    setAgentSelection(selection);
+    if (selection === "codex") {
+      setAgentCommand("codex app-server");
+      setAgentProtocol("jsonrpc");
+    } else if (selection === "kiro") {
+      setAgentCommand("kiro-cli acp");
+      setAgentProtocol("jsonrpc");
+    } else if (selection === "antigravity") {
+      setAgentCommand("agy --print -");
+      setAgentProtocol("oneshot");
+    }
+  };
+
+  // Open setup and fetch current settings if they exist
+  const openSetupWizard = async () => {
+    try {
+      const data: any = await invoke("get_current_workflow");
+      if (data && data.settings) {
+        const s = data.settings;
+        if (s.tracker) {
+          setTrackerKind(s.tracker.kind || "github");
+          setTrackerEndpoint(s.tracker.endpoint || "");
+          setTrackerApiKey(s.tracker.api_key || "");
+          setTrackerProjectSlug(s.tracker.project_slug || "");
+          setTrackerAssignee(s.tracker.assignee || "");
+          if (s.tracker.active_states) {
+            setTrackerActiveStates(s.tracker.active_states.join(", "));
+          }
+          if (s.tracker.terminal_states) {
+            setTrackerTerminalStates(s.tracker.terminal_states.join(", "));
+          }
+        }
+        if (s.polling) {
+          setPollingInterval(s.polling.interval_ms || 30000);
+        }
+        if (s.workspace) {
+          setWorkspaceRoot(s.workspace.root || "");
+        }
+        if (s.agent) {
+          setAgentMaxConcurrent(s.agent.max_concurrent_agents || 3);
+          setAgentMaxTurns(s.agent.max_turns || 20);
+          setAgentMaxRetryBackoff(s.agent.max_retry_backoff_ms || 300000);
+        }
+        if (s.codex) {
+          setAgentCommand(s.codex.command || "");
+          setAgentProtocol(s.codex.protocol || "jsonrpc");
+          setAgentThreadSandbox(s.codex.thread_sandbox || "workspace-write");
+          setAgentTurnTimeout(s.codex.turn_timeout_ms || 3600000);
+
+          if (s.codex.command === "codex app-server" && s.codex.protocol === "jsonrpc") {
+            setAgentSelection("codex");
+          } else if (s.codex.command === "kiro-cli acp" && s.codex.protocol === "jsonrpc") {
+            setAgentSelection("kiro");
+          } else if (s.codex.command === "agy --print -" && s.codex.protocol === "oneshot") {
+            setAgentSelection("antigravity");
+          } else {
+            setAgentSelection("custom");
+          }
+        }
+        if (s.hooks) {
+          setHooksAfterCreate(s.hooks.after_create || "");
+          setHooksBeforeRun(s.hooks.before_run || "");
+          setHooksAfterRun(s.hooks.after_run || "");
+          setHooksBeforeRemove(s.hooks.before_remove || "");
+          setHooksTimeout(s.hooks.timeout_ms || 120000);
+        }
+        if (data.prompt_template) {
+          setPromptTemplate(data.prompt_template);
+        }
+      }
+    } catch (e) {
+      console.error("Failed to load current workflow settings:", e);
+    }
+    setSetupStep(1);
+    setIsSetupOpen(true);
+  };
+
+  const handleSaveWorkflow = async () => {
+    setIsSavingWorkflow(true);
+    try {
+      const activeStatesList = trackerActiveStates
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean);
+      const terminalStatesList = trackerTerminalStates
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean);
+
+      const payload = {
+        settings: {
+          tracker: {
+            kind: trackerKind,
+            endpoint: trackerEndpoint,
+            api_key: trackerApiKey ? trackerApiKey : null,
+            project_slug: trackerProjectSlug,
+            assignee: trackerAssignee ? trackerAssignee : null,
+            active_states: activeStatesList,
+            terminal_states: terminalStatesList,
+          },
+          polling: {
+            interval_ms: Number(pollingInterval),
+          },
+          workspace: {
+            root: workspaceRoot,
+          },
+          agent: {
+            max_concurrent_agents: Number(agentMaxConcurrent),
+            max_turns: Number(agentMaxTurns),
+            max_retry_backoff_ms: Number(agentMaxRetryBackoff),
+            max_concurrent_agents_by_state: {},
+          },
+          codex: {
+            command: agentCommand,
+            protocol: agentProtocol,
+            approval_policy: {
+              reject: {
+                sandbox_approval: true,
+                rules: true,
+                mcp_elicitations: true,
+              },
+            },
+            thread_sandbox: agentThreadSandbox,
+            turn_sandbox_policy: null,
+            turn_timeout_ms: Number(agentTurnTimeout),
+            read_timeout_ms: 5000,
+            stall_timeout_ms: 300000,
+          },
+          hooks: {
+            after_create: hooksAfterCreate ? hooksAfterCreate : null,
+            before_run: hooksBeforeRun ? hooksBeforeRun : null,
+            after_run: hooksAfterRun ? hooksAfterRun : null,
+            before_remove: hooksBeforeRemove ? hooksBeforeRemove : null,
+            timeout_ms: Number(hooksTimeout),
+          },
+          server: {
+            port: null,
+            host: "127.0.0.1",
+          },
+        },
+        prompt_template: promptTemplate,
+      };
+
+      await invoke("save_workflow", { payload });
+      setReloadMsg("Workflow initialized successfully!");
+      fetchState();
+      setIsSetupOpen(false);
+      setTimeout(() => setReloadMsg(null), 3000);
+    } catch (e) {
+      alert(`Initialization failed: ${e}`);
+    } finally {
+      setIsSavingWorkflow(false);
+    }
+  };
 
   // Local cache of console logs mapped to issue identifier
   const [liveLogs, setLiveLogs] = useState<{ [id: string]: string[] }>({});
@@ -137,6 +417,11 @@ function App() {
           Object.values(stateSnapshot.blocked).forEach((entry) => {
             next[entry.issue.id] = entry.issue;
           });
+          if (stateSnapshot.backlog) {
+            stateSnapshot.backlog.forEach((issue) => {
+              next[issue.id] = issue;
+            });
+          }
           return next;
         });
       }
@@ -245,6 +530,157 @@ function App() {
     setMiniTodos((prev) => prev.filter((todo) => todo.id !== id));
   };
 
+  const formatIdentifier = (id: string | null | undefined): string => {
+    if (!id) return "";
+    return /^\d+$/.test(id) ? `#${id}` : id;
+  };
+
+  const renderInlineMarkdown = (text: string): React.ReactNode[] => {
+    const combinedRegex = /(\[[^\]]+\]\([^)]+\)|https?:\/\/[^\s]+|\*\*[^*]+\*\*|\*[^*]+\*)/g;
+    const parts = text.split(combinedRegex);
+
+    return parts.map((part, index) => {
+      const namedLinkMatch = part.match(/^\[([^\]]+)\]\(([^)]+)\)$/);
+      if (namedLinkMatch) {
+        return (
+          <a
+            key={index}
+            href={namedLinkMatch[2]}
+            target="_blank"
+            rel="noopener noreferrer"
+            style={{ color: "var(--color-primary)", textDecoration: "underline" }}
+          >
+            {namedLinkMatch[1]}
+          </a>
+        );
+      }
+
+      const nakedUrlMatch = part.match(/^https?:\/\/[^\s]+$/);
+      if (nakedUrlMatch) {
+        let url = nakedUrlMatch[0];
+        let trailing = "";
+        const trailingMatch = url.match(/([.,;:)]+)$/);
+        if (trailingMatch) {
+          url = url.slice(0, -trailingMatch[0].length);
+          trailing = trailingMatch[0];
+        }
+        return (
+          <span key={index}>
+            <a
+              href={url}
+              target="_blank"
+              rel="noopener noreferrer"
+              style={{ color: "var(--color-primary)", textDecoration: "underline" }}
+            >
+              {url}
+            </a>
+            {trailing}
+          </span>
+        );
+      }
+
+      const boldMatch = part.match(/^\*\*([^*]+)\*\*$/);
+      if (boldMatch) {
+        return (
+          <strong key={index} style={{ fontWeight: "bold", color: "var(--color-text-main)" }}>
+            {boldMatch[1]}
+          </strong>
+        );
+      }
+
+      const italicsMatch = part.match(/^\*([^*]+)\*$/);
+      if (italicsMatch) {
+        return (
+          <em key={index} style={{ fontStyle: "italic" }}>
+            {italicsMatch[1]}
+          </em>
+        );
+      }
+
+      return part;
+    });
+  };
+
+  const parseMarkdownToReact = (text: string | null | undefined): React.ReactNode => {
+    if (!text) return null;
+
+    const lines = text.split(/\r?\n/);
+    const elements: React.ReactNode[] = [];
+    let currentList: string[] = [];
+
+    const flushList = (key: string | number) => {
+      if (currentList.length > 0) {
+        elements.push(
+          <ul
+            key={`list-${key}`}
+            style={{ paddingLeft: "1.2rem", margin: "0.4rem 0", listStyleType: "disc" }}
+          >
+            {currentList.map((item, idx) => (
+              <li key={idx} style={{ marginBottom: "0.2rem" }}>
+                {renderInlineMarkdown(item)}
+              </li>
+            ))}
+          </ul>,
+        );
+        currentList = [];
+      }
+    };
+
+    lines.forEach((line, index) => {
+      const trimmed = line.trim();
+
+      if (/^[-*+]\s+/.test(trimmed)) {
+        const itemContent = trimmed.replace(/^[-*+]\s+/, "");
+        currentList.push(itemContent);
+      } else {
+        flushList(index);
+
+        if (!trimmed) return;
+
+        if (/^(?:---|\*\*\*|___)$/.test(trimmed)) {
+          elements.push(
+            <hr
+              key={index}
+              style={{
+                border: "none",
+                borderTop: "1px solid rgba(255, 255, 255, 0.08)",
+                margin: "0.8rem 0",
+              }}
+            />,
+          );
+        } else if (/^#{1,6}\s+/.test(trimmed)) {
+          const level = (trimmed.match(/^#+/) || ["#"])[0].length;
+          const headingText = trimmed.replace(/^#+\s+/, "");
+          const fontSize = level === 1 ? "1.2rem" : level === 2 ? "1.1rem" : "0.95rem";
+          elements.push(
+            <div
+              key={index}
+              style={{
+                fontWeight: 600,
+                fontSize,
+                color: "var(--color-text-main)",
+                marginTop: "0.6rem",
+                marginBottom: "0.3rem",
+              }}
+            >
+              {renderInlineMarkdown(headingText)}
+            </div>,
+          );
+        } else {
+          elements.push(
+            <p key={index} style={{ margin: "0.4rem 0", lineHeight: 1.45 }}>
+              {renderInlineMarkdown(trimmed)}
+            </p>,
+          );
+        }
+      }
+    });
+
+    flushList("end");
+
+    return <div className="markdown-body">{elements}</div>;
+  };
+
   // Compile Kanban board columns
   const runningArray = orchState ? Object.values(orchState.running) : [];
   const blockedArray = orchState ? Object.values(orchState.blocked) : [];
@@ -252,8 +688,31 @@ function App() {
   const completedIds = orchState ? orchState.completed : [];
 
   // Group tickets by column
-  // Column 1: Todo (Retrying & Claimed but not yet running/blocked)
-  const todoColumnTickets = retryArray.map((retry) => {
+  // Column 1: Todo (Retrying & open candidate issues not yet running/blocked/completed)
+  const backlogIssues = orchState?.backlog
+    ? orchState.backlog
+        .filter((issue) => {
+          const isRunning = runningArray.some((r) => r.issue.id === issue.id);
+          const isBlocked = blockedArray.some((b) => b.issue_id === issue.id);
+          const isRetry = retryArray.some((r) => r.issue_id === issue.id);
+          const isDone = completedIds.includes(issue.id);
+          return !isRunning && !isBlocked && !isRetry && !isDone;
+        })
+        .map((issue) => ({
+          id: issue.id,
+          identifier: issue.identifier,
+          title: issue.title,
+          priority: issue.priority,
+          state: "Todo",
+          type: "backlog" as const,
+          error: null,
+          attempt: 0,
+          due_at_ms: 0,
+          issue: issue,
+        }))
+    : [];
+
+  const retryTickets = retryArray.map((retry) => {
     const cached = issueCache[retry.issue_id];
     return {
       id: retry.issue_id,
@@ -268,6 +727,8 @@ function App() {
       issue: cached || null,
     };
   });
+
+  const todoColumnTickets = [...backlogIssues, ...retryTickets];
 
   // Column 2: In Progress (Running entries)
   const inProgressColumnTickets = runningArray.map((entry) => ({
@@ -292,18 +753,26 @@ function App() {
   }));
 
   // Column 4: Done (Completed IDs)
-  const doneColumnTickets = completedIds.map((id) => {
-    const cached = issueCache[id];
-    return {
-      id,
-      identifier: cached?.identifier || `MT-COMP`,
-      title: cached?.title || "Agent task completed",
-      priority: cached?.priority || null,
-      state: "Done",
-      type: "completed" as const,
-      issue: cached || null,
-    };
-  });
+  const doneColumnTickets = completedIds
+    .filter((id) => {
+      const isRunning = runningArray.some((r) => r.issue.id === id);
+      const isBlocked = blockedArray.some((b) => b.issue_id === id);
+      const isRetry = retryArray.some((r) => r.issue_id === id);
+      const isBacklog = orchState?.backlog?.some((issue) => issue.id === id);
+      return !isRunning && !isBlocked && !isRetry && !isBacklog;
+    })
+    .map((id) => {
+      const cached = issueCache[id];
+      return {
+        id,
+        identifier: cached?.identifier || `MT-COMP`,
+        title: cached?.title || "Agent task completed",
+        priority: cached?.priority || null,
+        state: "Done",
+        type: "completed" as const,
+        issue: cached || null,
+      };
+    });
 
   // Identify selected ticket details for drawer
   const getSelectedTicketDetails = () => {
@@ -331,78 +800,237 @@ function App() {
       return { type: "completed" as const, data: cached || null, entry: completed };
     }
 
+    // Check Backlog
+    const backlog = orchState?.backlog?.find((b) => b.id === selectedIssueId);
+    if (backlog) return { type: "backlog" as const, data: backlog, entry: backlog };
+
     return null;
   };
 
   const selectedDetails = getSelectedTicketDetails();
 
-  // Generate automated checklist plan items based on current turn count
+  // Generate automated checklist plan items based on current turn count or parsed description checkboxes
   const renderPlanChecklist = (turnCount: number, type: string) => {
     const isDone = type === "completed";
+    const issue = selectedDetails?.data;
+    const identifier = issue?.identifier || "";
+    const description = issue?.description || "";
+    const title = issue?.title || "";
 
-    const checklistPhases = [
-      {
-        title: "1. Inspect existing TodoMVC footer filter implementation",
-        steps: [
-          { text: "Locate React component rendering filter tabs", activeTurn: 1 },
-          { text: "Identify how active/completed counts are computed", activeTurn: 2 },
-          { text: "Review shared CSS to understand layout constraints", activeTurn: 3 },
-        ],
-      },
-      {
-        title: "2. Extend filter markup to support badges without changing behavior",
-        steps: [
-          { text: "Add badge rendering for Active", activeTurn: 4 },
-          { text: "Add badge rendering for Completed", activeTurn: 5 },
-          { text: "Ensure badges render even if count is 0", activeTurn: 6 },
-          { text: "Keep All tab unchanged and preserve routing/selection", activeTurn: 7 },
-        ],
-      },
-      {
-        title: "3. Add styling for a compact vintage macOS-style badge",
-        steps: [
-          { text: "Add local CSS overrides rather than changing upstream CSS", activeTurn: 8 },
-          { text: "Style badge as a small gray rounded pill with highlight", activeTurn: 9 },
-          { text: "Keep spacing tight and visually consistent", activeTurn: 10 },
-          { text: "Avoid introducing layout regressions in filter row", activeTurn: 11 },
-        ],
-      },
-      {
-        title: "4. Rebuild generated artifacts",
-        steps: [
-          { text: "Compile the TypeScript sources", activeTurn: 12 },
-          { text: "Rebuild the browser bundle so generated files sync", activeTurn: 13 },
-        ],
-      },
-      {
-        title: "5. Validate the final behavior",
-        steps: [{ text: "Confirm Active and Completed both show numeric badges", activeTurn: 14 }],
-      },
-    ];
+    // Determine if this is the TodoMVC badges demo issue
+    const isDemoIssue =
+      identifier === "DEMO-101" ||
+      identifier === "demo-issue-1" ||
+      title.toLowerCase().includes("todomvc") ||
+      description.toLowerCase().includes("todomvc");
+
+    interface ChecklistStep {
+      text: string;
+      completed: boolean;
+      activeTurn?: number;
+    }
+
+    interface ChecklistPhase {
+      title: string;
+      steps: ChecklistStep[];
+    }
+
+    let checklistPhases: ChecklistPhase[] = [];
+
+    if (isDemoIssue) {
+      // Fallback to the hardcoded TodoMVC checklist
+      checklistPhases = [
+        {
+          title: "1. Inspect existing TodoMVC footer filter implementation",
+          steps: [
+            {
+              text: "Locate React component rendering filter tabs",
+              completed: isDone || turnCount > 1,
+              activeTurn: 1,
+            },
+            {
+              text: "Identify how active/completed counts are computed",
+              completed: isDone || turnCount > 2,
+              activeTurn: 2,
+            },
+            {
+              text: "Review shared CSS to understand layout constraints",
+              completed: isDone || turnCount > 3,
+              activeTurn: 3,
+            },
+          ],
+        },
+        {
+          title: "2. Extend filter markup to support badges without changing behavior",
+          steps: [
+            {
+              text: "Add badge rendering for Active",
+              completed: isDone || turnCount > 4,
+              activeTurn: 4,
+            },
+            {
+              text: "Add badge rendering for Completed",
+              completed: isDone || turnCount > 5,
+              activeTurn: 5,
+            },
+            {
+              text: "Ensure badges render even if count is 0",
+              completed: isDone || turnCount > 6,
+              activeTurn: 6,
+            },
+            {
+              text: "Keep All tab unchanged and preserve routing/selection",
+              completed: isDone || turnCount > 7,
+              activeTurn: 7,
+            },
+          ],
+        },
+        {
+          title: "3. Add styling for a compact vintage macOS-style badge",
+          steps: [
+            {
+              text: "Add local CSS overrides rather than changing upstream CSS",
+              completed: isDone || turnCount > 8,
+              activeTurn: 8,
+            },
+            {
+              text: "Style badge as a small gray rounded pill with highlight",
+              completed: isDone || turnCount > 9,
+              activeTurn: 9,
+            },
+            {
+              text: "Keep spacing tight and visually consistent",
+              completed: isDone || turnCount > 10,
+              activeTurn: 10,
+            },
+            {
+              text: "Avoid introducing layout regressions in filter row",
+              completed: isDone || turnCount > 11,
+              activeTurn: 11,
+            },
+          ],
+        },
+        {
+          title: "4. Rebuild generated artifacts",
+          steps: [
+            {
+              text: "Compile the TypeScript sources",
+              completed: isDone || turnCount > 12,
+              activeTurn: 12,
+            },
+            {
+              text: "Rebuild the browser bundle so generated files sync",
+              completed: isDone || turnCount > 13,
+              activeTurn: 13,
+            },
+          ],
+        },
+        {
+          title: "5. Validate the final behavior",
+          steps: [
+            {
+              text: "Confirm Active and Completed both show numeric badges",
+              completed: isDone || turnCount > 14,
+              activeTurn: 14,
+            },
+          ],
+        },
+      ];
+    } else {
+      // Parse checklist dynamically from the description
+      const lines = description.split(/\r?\n/);
+      let currentPhase: ChecklistPhase | null = null;
+
+      const checkboxRegex = /^\s*[-*+]\s+\[([ xX])\]\s+(.+)$/;
+
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed) continue;
+
+        const checkboxMatch = line.match(checkboxRegex);
+        if (checkboxMatch) {
+          const completed = checkboxMatch[1].toLowerCase() === "x";
+          const text = checkboxMatch[2].trim();
+
+          if (!currentPhase) {
+            currentPhase = { title: "Tasks", steps: [] };
+            checklistPhases.push(currentPhase);
+          }
+          currentPhase.steps.push({ text, completed });
+        } else {
+          // Heuristic to detect section titles/headers
+          const isHeader =
+            trimmed.startsWith("#") ||
+            (trimmed.startsWith("**") && trimmed.endsWith("**")) ||
+            trimmed.endsWith(":") ||
+            (trimmed.length < 60 && !trimmed.includes("[") && !trimmed.includes("]"));
+
+          if (isHeader) {
+            let phaseTitle = trimmed
+              .replace(/^#{1,6}\s+/, "")
+              .replace(/^\*\*|\*\*$/g, "")
+              .trim();
+
+            phaseTitle = phaseTitle.replace(/^[-*+]\s+/, "");
+            if (phaseTitle.endsWith(":")) {
+              phaseTitle = phaseTitle.slice(0, -1).trim();
+            }
+
+            if (phaseTitle.length > 0) {
+              currentPhase = { title: phaseTitle, steps: [] };
+              checklistPhases.push(currentPhase);
+            }
+          }
+        }
+      }
+
+      // Filter out empty phases
+      checklistPhases = checklistPhases.filter((p) => p.steps.length > 0);
+    }
+
+    if (checklistPhases.length === 0) {
+      return (
+        <div style={{ padding: "0.5rem", fontSize: "0.75rem", color: "var(--color-text-muted)" }}>
+          No checklist plan defined in the issue description.
+        </div>
+      );
+    }
+
+    // For dynamic checklists, find the first incomplete item and mark it as active if running
+    let firstIncompleteFound = false;
 
     return (
       <div className="checklist-container">
         {checklistPhases.map((phase, pIdx) => {
-          // Check if any step in this phase is active or complete
-          const isPhasePending = !isDone && phase.steps.every((s) => turnCount < s.activeTurn);
+          // Check if any step in this phase is incomplete
+          const isPhasePending = !isDone && phase.steps.every((s) => !s.completed);
+
           return (
             <div key={pIdx} style={{ marginBottom: "0.5rem" }}>
               <div
-                className="detail-section-title"
+                className="checklist-phase-title"
                 style={{
-                  fontSize: "0.7rem",
                   opacity: isPhasePending ? 0.4 : 1,
-                  borderBottom: "none",
-                  paddingBottom: 0,
-                  marginBottom: "0.2rem",
                 }}
               >
                 {phase.title}
               </div>
 
               {phase.steps.map((step, sIdx) => {
-                const isStepCompleted = isDone || turnCount > step.activeTurn;
-                const isStepInProgress = !isDone && turnCount === step.activeTurn;
+                let isStepCompleted = step.completed;
+                let isStepInProgress = false;
+
+                if (isDemoIssue) {
+                  // For the hardcoded demo, use the original activeTurn logic
+                  isStepCompleted = isDone || turnCount > (step as any).activeTurn;
+                  isStepInProgress = !isDone && turnCount === (step as any).activeTurn;
+                } else {
+                  // For dynamic checklists: if not completed, and we are running and it's the first incomplete one, mark as active
+                  if (!isStepCompleted && !isDone && type === "running" && !firstIncompleteFound) {
+                    isStepInProgress = true;
+                    firstIncompleteFound = true;
+                  }
+                }
 
                 let stepClass = "item-pending";
                 if (isStepCompleted) stepClass = "item-checked";
@@ -452,6 +1080,9 @@ function App() {
               {reloadMsg}
             </span>
           )}
+          <button className="btn-premium" style={{ marginRight: "8px" }} onClick={openSetupWizard}>
+            Setup Wizard
+          </button>
           <button className="btn-premium" onClick={handleReload} disabled={isReloading}>
             {isReloading ? "Reloading..." : "Reload Config"}
           </button>
@@ -515,19 +1146,36 @@ function App() {
                   >
                     <div className="card-header">
                       <div className="card-identity">
-                        <span className="issue-tag">{ticket.identifier}</span>
+                        <span className="issue-tag">{formatIdentifier(ticket.identifier)}</span>
                       </div>
                       {ticket.priority && <span className="card-priority">{ticket.priority}</span>}
                     </div>
                     <span className="card-title">{ticket.title}</span>
                     <div className="card-footer">
-                      <div className="card-meta-left">
-                        <div className="status-dot retrying"></div>
-                        <span>Attempt #{ticket.attempt}</span>
-                      </div>
-                      <span style={{ color: "var(--color-purple)", fontFamily: "monospace" }}>
-                        Retrying
-                      </span>
+                      {ticket.type === "retry" ? (
+                        <>
+                          <div className="card-meta-left">
+                            <div className="status-dot retrying"></div>
+                            <span>Attempt #{ticket.attempt}</span>
+                          </div>
+                          <span style={{ color: "var(--color-purple)", fontFamily: "monospace" }}>
+                            Retrying
+                          </span>
+                        </>
+                      ) : (
+                        <>
+                          <div className="card-meta-left">
+                            <div
+                              className="status-dot backlog"
+                              style={{ backgroundColor: "var(--color-zinc-400)" }}
+                            ></div>
+                            <span>Open</span>
+                          </div>
+                          <span style={{ color: "var(--color-zinc-400)", fontFamily: "monospace" }}>
+                            Backlog
+                          </span>
+                        </>
+                      )}
                     </div>
                   </div>
                 ))
@@ -562,7 +1210,7 @@ function App() {
                     >
                       <div className="card-header">
                         <div className="card-identity">
-                          <span className="issue-tag">{ticket.identifier}</span>
+                          <span className="issue-tag">{formatIdentifier(ticket.identifier)}</span>
                         </div>
                         {ticket.priority && (
                           <span className="card-priority">{ticket.priority}</span>
@@ -610,7 +1258,7 @@ function App() {
                   >
                     <div className="card-header">
                       <div className="card-identity">
-                        <span className="issue-tag">{ticket.identifier}</span>
+                        <span className="issue-tag">{formatIdentifier(ticket.identifier)}</span>
                       </div>
                       {ticket.priority && <span className="card-priority">{ticket.priority}</span>}
                     </div>
@@ -652,7 +1300,7 @@ function App() {
                   >
                     <div className="card-header">
                       <div className="card-identity">
-                        <span className="issue-tag">{ticket.identifier}</span>
+                        <span className="issue-tag">{formatIdentifier(ticket.identifier)}</span>
                       </div>
                       {ticket.priority && <span className="card-priority">{ticket.priority}</span>}
                     </div>
@@ -704,7 +1352,7 @@ function App() {
                         border: "1px solid rgba(255, 255, 255, 0.1)",
                       }}
                     >
-                      {selectedDetails.data?.identifier || "MT-COMP"}
+                      {formatIdentifier(selectedDetails.data?.identifier || "MT-COMP")}
                     </span>
                     <span style={{ fontSize: "0.85rem", opacity: 0.8 }}>Issue Inspector</span>
                   </span>
@@ -730,7 +1378,9 @@ function App() {
                   {selectedDetails.data?.title || "Agent task session details"}
                 </h2>
                 {selectedDetails.data?.description && (
-                  <p className="ticket-description">{selectedDetails.data.description}</p>
+                  <div className="ticket-description">
+                    {parseMarkdownToReact(selectedDetails.data.description)}
+                  </div>
                 )}
               </div>
 
@@ -799,106 +1449,150 @@ function App() {
               </div>
 
               {/* Execution plan generated by Agent */}
-              <div>
-                <div className="detail-section-title">Automated Checklist Plan</div>
-                {renderPlanChecklist(
-                  selectedDetails.type === "running"
-                    ? (selectedDetails.entry as RunningEntry).turn_count
-                    : selectedDetails.type === "completed"
-                      ? 20
-                      : 0,
-                  selectedDetails.type,
-                )}
-              </div>
+              {(() => {
+                const issue = selectedDetails.data;
+                const identifier = issue?.identifier || "";
+                const description = issue?.description || "";
+                const title = issue?.title || "";
 
-              {/* Vintage macOS Badge Interactive Widget Demo */}
-              <div>
-                <div className="detail-section-title">Vintage macOS Badge Sandbox</div>
-                <div
-                  style={{
-                    marginBottom: "0.4rem",
-                    fontSize: "0.72rem",
-                    color: "var(--color-text-muted)",
-                  }}
-                >
-                  Interact with the mini TodoMVC app to test active and completed numeric bucket
-                  badges.
-                </div>
-                <div className="mini-todomvc">
-                  <div className="mini-todo-header">React • TodoMVC (Sandbox)</div>
+                const isDemoIssue =
+                  identifier === "DEMO-101" ||
+                  identifier === "demo-issue-1" ||
+                  title.toLowerCase().includes("todomvc") ||
+                  description.toLowerCase().includes("todomvc");
 
-                  <form onSubmit={handleAddMiniTodo} className="mini-todo-input-form">
-                    <input
-                      type="text"
-                      className="mini-todo-input"
-                      placeholder="What needs to be done?"
-                      value={miniTodoInput}
-                      onChange={(e) => setMiniTodoInput(e.target.value)}
-                    />
-                  </form>
+                let hasChecklist = isDemoIssue;
+                if (!isDemoIssue && description) {
+                  const lines = description.split(/\r?\n/);
+                  const checkboxRegex = /^\s*[-*+]\s+\[([ xX])\]\s+(.+)$/;
+                  hasChecklist = lines.some((line) => checkboxRegex.test(line));
+                }
 
-                  <div className="mini-todo-list">
-                    {filteredMiniTodos.length === 0 ? (
-                      <div
-                        style={{
-                          textAlign: "center",
-                          padding: "1rem",
-                          color: "#9c9c9c",
-                          fontSize: "0.72rem",
-                        }}
-                      >
-                        No items in bucket
-                      </div>
-                    ) : (
-                      filteredMiniTodos.map((todo) => (
-                        <div key={todo.id} className="mini-todo-item">
-                          <div className="mini-todo-item-left">
-                            <div
-                              className={`mini-todo-toggle ${todo.completed ? "completed" : ""}`}
-                              onClick={() => handleToggleMiniTodo(todo.id)}
-                            />
-                            <span className={`mini-todo-text ${todo.completed ? "completed" : ""}`}>
-                              {todo.text}
-                            </span>
-                          </div>
-                          <button
-                            type="button"
-                            className="mini-todo-delete"
-                            onClick={() => handleDeleteMiniTodo(todo.id)}
-                          >
-                            ✖
-                          </button>
-                        </div>
-                      ))
+                if (!hasChecklist) return null;
+
+                const headingTitle = isDemoIssue ? "Automated Checklist Plan" : "Issue Checklist";
+
+                return (
+                  <div>
+                    <div className="detail-section-title">{headingTitle}</div>
+                    {renderPlanChecklist(
+                      selectedDetails.type === "running"
+                        ? (selectedDetails.entry as RunningEntry).turn_count
+                        : selectedDetails.type === "completed"
+                          ? 20
+                          : 0,
+                      selectedDetails.type,
                     )}
                   </div>
+                );
+              })()}
 
-                  <div className="mini-todo-footer">
-                    <span>{miniActiveCount} items left</span>
+              {/* Vintage macOS Badge Interactive Widget Demo */}
+              {(() => {
+                const issue = selectedDetails.data;
+                const identifier = issue?.identifier || "";
+                const description = issue?.description || "";
+                const title = issue?.title || "";
+                const isDemoIssue =
+                  identifier === "DEMO-101" ||
+                  identifier === "demo-issue-1" ||
+                  title.toLowerCase().includes("todomvc") ||
+                  description.toLowerCase().includes("todomvc");
 
-                    <div className="mini-todo-tabs">
-                      <div
-                        className={`mini-todo-tab ${miniTodoFilter === "all" ? "selected" : ""}`}
-                        onClick={() => setMiniTodoFilter("all")}
-                      >
-                        All
+                if (!isDemoIssue) return null;
+
+                return (
+                  <div>
+                    <div className="detail-section-title">Vintage macOS Badge Sandbox</div>
+                    <div
+                      style={{
+                        marginBottom: "0.4rem",
+                        fontSize: "0.72rem",
+                        color: "var(--color-text-muted)",
+                      }}
+                    >
+                      Interact with the mini TodoMVC app to test active and completed numeric bucket
+                      badges.
+                    </div>
+                    <div className="mini-todomvc">
+                      <div className="mini-todo-header">React • TodoMVC (Sandbox)</div>
+
+                      <form onSubmit={handleAddMiniTodo} className="mini-todo-input-form">
+                        <input
+                          type="text"
+                          className="mini-todo-input"
+                          placeholder="What needs to be done?"
+                          value={miniTodoInput}
+                          onChange={(e) => setMiniTodoInput(e.target.value)}
+                        />
+                      </form>
+
+                      <div className="mini-todo-list">
+                        {filteredMiniTodos.length === 0 ? (
+                          <div
+                            style={{
+                              textAlign: "center",
+                              padding: "1rem",
+                              color: "#9c9c9c",
+                              fontSize: "0.72rem",
+                            }}
+                          >
+                            No items in bucket
+                          </div>
+                        ) : (
+                          filteredMiniTodos.map((todo) => (
+                            <div key={todo.id} className="mini-todo-item">
+                              <div className="mini-todo-item-left">
+                                <div
+                                  className={`mini-todo-toggle ${todo.completed ? "completed" : ""}`}
+                                  onClick={() => handleToggleMiniTodo(todo.id)}
+                                />
+                                <span
+                                  className={`mini-todo-text ${todo.completed ? "completed" : ""}`}
+                                >
+                                  {todo.text}
+                                </span>
+                              </div>
+                              <button
+                                type="button"
+                                className="mini-todo-delete"
+                                onClick={() => handleDeleteMiniTodo(todo.id)}
+                              >
+                                ✖
+                              </button>
+                            </div>
+                          ))
+                        )}
                       </div>
-                      <div
-                        className={`mini-todo-tab ${miniTodoFilter === "active" ? "selected" : ""}`}
-                        onClick={() => setMiniTodoFilter("active")}
-                      >
-                        Active <span className="macos-badge">{miniActiveCount}</span>
-                      </div>
-                      <div
-                        className={`mini-todo-tab ${miniTodoFilter === "completed" ? "selected" : ""}`}
-                        onClick={() => setMiniTodoFilter("completed")}
-                      >
-                        Completed <span className="macos-badge">{miniCompletedCount}</span>
+
+                      <div className="mini-todo-footer">
+                        <span>{miniActiveCount} items left</span>
+
+                        <div className="mini-todo-tabs">
+                          <div
+                            className={`mini-todo-tab ${miniTodoFilter === "all" ? "selected" : ""}`}
+                            onClick={() => setMiniTodoFilter("all")}
+                          >
+                            All
+                          </div>
+                          <div
+                            className={`mini-todo-tab ${miniTodoFilter === "active" ? "selected" : ""}`}
+                            onClick={() => setMiniTodoFilter("active")}
+                          >
+                            Active <span className="macos-badge">{miniActiveCount}</span>
+                          </div>
+                          <div
+                            className={`mini-todo-tab ${miniTodoFilter === "completed" ? "selected" : ""}`}
+                            onClick={() => setMiniTodoFilter("completed")}
+                          >
+                            Completed <span className="macos-badge">{miniCompletedCount}</span>
+                          </div>
+                        </div>
                       </div>
                     </div>
                   </div>
-                </div>
-              </div>
+                );
+              })()}
 
               {/* Human Action Center for Blocked Handoff */}
               {selectedDetails.type === "blocked" && (
@@ -969,6 +1663,377 @@ function App() {
           </div>
         )}
       </div>
+
+      {/* Setup Modal */}
+      {isSetupOpen && (
+        <div className="modal-backdrop" onClick={() => setIsSetupOpen(false)}>
+          <div className="setup-modal-content" onClick={(e) => e.stopPropagation()}>
+            <div className="setup-modal-header">
+              <span className="setup-modal-title">
+                Skrvm Setup {"\u0026"} Initialization Wizard
+              </span>
+              <button className="setup-modal-close" onClick={() => setIsSetupOpen(false)}>
+                &times;
+              </button>
+            </div>
+
+            <div className="setup-steps-bar">
+              <div
+                className={`setup-step-indicator ${setupStep === 1 ? "active" : ""}`}
+                onClick={() => setSetupStep(1)}
+              >
+                1. Issue Tracker
+              </div>
+              <div
+                className={`setup-step-indicator ${setupStep === 2 ? "active" : ""}`}
+                onClick={() => setSetupStep(2)}
+              >
+                2. Coding Agent
+              </div>
+              <div
+                className={`setup-step-indicator ${setupStep === 3 ? "active" : ""}`}
+                onClick={() => setSetupStep(3)}
+              >
+                3. Advanced {"\u0026"} Hooks
+              </div>
+              <div
+                className={`setup-step-indicator ${setupStep === 4 ? "active" : ""}`}
+                onClick={() => setSetupStep(4)}
+              >
+                4. Instructions
+              </div>
+            </div>
+
+            <div className="setup-modal-body">
+              {setupStep === 1 && (
+                <div style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
+                  <div className="setup-tip">
+                    Configure your issue tracker credentials. If you use environment variables (e.g.{" "}
+                    <code>$GITHUB_TOKEN</code>), Skrvm will dynamically resolve them at runtime.
+                  </div>
+                  <div className="setup-form-group">
+                    <label className="setup-label">Tracker Provider</label>
+                    <select
+                      className="setup-select"
+                      value={trackerKind}
+                      onChange={(e) => handleTrackerKindChange(e.target.value)}
+                    >
+                      <option value="github">GitHub Issues</option>
+                      <option value="jira">Jira Software</option>
+                      <option value="linear">Linear</option>
+                      <option value="memory">In-Memory (Local Only)</option>
+                    </select>
+                  </div>
+
+                  <div className="setup-form-group">
+                    <label className="setup-label">Endpoint URL</label>
+                    <input
+                      type="text"
+                      className="setup-input"
+                      value={trackerEndpoint}
+                      onChange={(e) => setTrackerEndpoint(e.target.value)}
+                      placeholder="e.g. https://api.github.com"
+                    />
+                  </div>
+
+                  <div className="setup-form-group">
+                    <label className="setup-label">API Key / Token</label>
+                    <input
+                      type="password"
+                      className="setup-input"
+                      value={trackerApiKey}
+                      onChange={(e) => setTrackerApiKey(e.target.value)}
+                      placeholder="e.g. $GITHUB_TOKEN"
+                    />
+                  </div>
+
+                  <div className="setup-form-group">
+                    <label className="setup-label">Project Identifier / Slug</label>
+                    <input
+                      type="text"
+                      className="setup-input"
+                      value={trackerProjectSlug}
+                      onChange={(e) => setTrackerProjectSlug(e.target.value)}
+                      placeholder="e.g. drew-simmons/skrvm"
+                    />
+                  </div>
+
+                  <div className="setup-form-group">
+                    <label className="setup-label">Default Assignee ID</label>
+                    <input
+                      type="text"
+                      className="setup-input"
+                      value={trackerAssignee}
+                      onChange={(e) => setTrackerAssignee(e.target.value)}
+                      placeholder="e.g. $GITHUB_ASSIGNEE"
+                    />
+                  </div>
+
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.8rem" }}>
+                    <div className="setup-form-group">
+                      <label className="setup-label">Active States (Comma Sep)</label>
+                      <input
+                        type="text"
+                        className="setup-input"
+                        value={trackerActiveStates}
+                        onChange={(e) => setTrackerActiveStates(e.target.value)}
+                        placeholder="Todo, In Progress"
+                      />
+                    </div>
+                    <div className="setup-form-group">
+                      <label className="setup-label">Terminal States (Comma Sep)</label>
+                      <input
+                        type="text"
+                        className="setup-input"
+                        value={trackerTerminalStates}
+                        onChange={(e) => setTrackerTerminalStates(e.target.value)}
+                        placeholder="Done, Closed"
+                      />
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {setupStep === 2 && (
+                <div style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
+                  <div className="setup-tip">
+                    Select which coding assistant you want to orchestrate. Skrvm will configure the
+                    standard execution protocol and commands automatically.
+                  </div>
+
+                  <label className="setup-label">Select Assistant</label>
+                  <div className="agent-cards-grid">
+                    <div
+                      className={`agent-setup-card ${agentSelection === "codex" ? "selected" : ""}`}
+                      onClick={() => handleAgentSelectionChange("codex")}
+                    >
+                      <span className="agent-card-title">Codex</span>
+                      <span className="agent-card-desc">
+                        Conversational JSON-RPC client via "codex app-server"
+                      </span>
+                    </div>
+                    <div
+                      className={`agent-setup-card ${agentSelection === "kiro" ? "selected" : ""}`}
+                      onClick={() => handleAgentSelectionChange("kiro")}
+                    >
+                      <span className="agent-card-title">Kiro CLI</span>
+                      <span className="agent-card-desc">
+                        Interactive ACP server via "kiro-cli acp"
+                      </span>
+                    </div>
+                    <div
+                      className={`agent-setup-card ${agentSelection === "antigravity" ? "selected" : ""}`}
+                      onClick={() => handleAgentSelectionChange("antigravity")}
+                    >
+                      <span className="agent-card-title">Antigravity</span>
+                      <span className="agent-card-desc">
+                        Fast, single-shot execution via "agy --print -"
+                      </span>
+                    </div>
+                  </div>
+
+                  <div
+                    style={{
+                      marginTop: "0.5rem",
+                      borderTop: "1px solid rgba(255,255,255,0.05)",
+                      paddingTop: "0.8rem",
+                    }}
+                  >
+                    <div className="setup-form-group">
+                      <label className="setup-label">Custom Command Override</label>
+                      <input
+                        type="text"
+                        className="setup-input"
+                        value={agentCommand}
+                        onChange={(e) => {
+                          setAgentCommand(e.target.value);
+                          setAgentSelection("custom");
+                        }}
+                        placeholder="e.g. codex app-server"
+                      />
+                    </div>
+
+                    <div
+                      style={{
+                        display: "grid",
+                        gridTemplateColumns: "1fr 1fr",
+                        gap: "0.8rem",
+                        marginTop: "0.6rem",
+                      }}
+                    >
+                      <div className="setup-form-group">
+                        <label className="setup-label">Protocol</label>
+                        <select
+                          className="setup-select"
+                          value={agentProtocol}
+                          onChange={(e) => {
+                            setAgentProtocol(e.target.value);
+                            setAgentSelection("custom");
+                          }}
+                        >
+                          <option value="jsonrpc">JSON-RPC (Multi-turn)</option>
+                          <option value="oneshot">One-Shot (Single execution)</option>
+                        </select>
+                      </div>
+                      <div className="setup-form-group">
+                        <label className="setup-label">Thread Sandbox</label>
+                        <input
+                          type="text"
+                          className="setup-input"
+                          value={agentThreadSandbox}
+                          onChange={(e) => setAgentThreadSandbox(e.target.value)}
+                          placeholder="workspace-write"
+                        />
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {setupStep === 3 && (
+                <div style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
+                  <div className="setup-tip">
+                    Configure system execution limits and VCS checkout/commit hooks. These hooks
+                    manage directory sandboxes dynamically for each ticket turn.
+                  </div>
+
+                  <div
+                    style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: "0.6rem" }}
+                  >
+                    <div className="setup-form-group">
+                      <label className="setup-label">Polling Cycle (ms)</label>
+                      <input
+                        type="number"
+                        className="setup-input"
+                        value={pollingInterval}
+                        onChange={(e) => setPollingInterval(Number(e.target.value))}
+                      />
+                    </div>
+                    <div className="setup-form-group">
+                      <label className="setup-label">Max Workers</label>
+                      <input
+                        type="number"
+                        className="setup-input"
+                        value={agentMaxConcurrent}
+                        onChange={(e) => setAgentMaxConcurrent(Number(e.target.value))}
+                      />
+                    </div>
+                    <div className="setup-form-group">
+                      <label className="setup-label">Max Turns</label>
+                      <input
+                        type="number"
+                        className="setup-input"
+                        value={agentMaxTurns}
+                        onChange={(e) => setAgentMaxTurns(Number(e.target.value))}
+                      />
+                    </div>
+                  </div>
+
+                  <div className="setup-form-group">
+                    <label className="setup-label">Sandbox Root Directory</label>
+                    <input
+                      type="text"
+                      className="setup-input"
+                      value={workspaceRoot}
+                      onChange={(e) => setWorkspaceRoot(e.target.value)}
+                      placeholder="e.g. ~/dev/scratch/skrvm/workspaces"
+                    />
+                  </div>
+
+                  <div className="setup-form-group">
+                    <label className="setup-label">Post-Creation Hook (after_create)</label>
+                    <input
+                      type="text"
+                      className="setup-input"
+                      value={hooksAfterCreate}
+                      onChange={(e) => setHooksAfterCreate(e.target.value)}
+                      placeholder="e.g. git clone ... && git checkout -b ..."
+                    />
+                  </div>
+
+                  <div className="setup-form-group">
+                    <label className="setup-label">Pre-Execution Hook (before_run)</label>
+                    <input
+                      type="text"
+                      className="setup-input"
+                      value={hooksBeforeRun}
+                      onChange={(e) => setHooksBeforeRun(e.target.value)}
+                      placeholder="e.g. pnpm install"
+                    />
+                  </div>
+
+                  <div className="setup-form-group">
+                    <label className="setup-label">Post-Execution Hook (after_run)</label>
+                    <input
+                      type="text"
+                      className="setup-input"
+                      value={hooksAfterRun}
+                      onChange={(e) => setHooksAfterRun(e.target.value)}
+                      placeholder="e.g. git add . && git commit ... && git push"
+                    />
+                  </div>
+                </div>
+              )}
+
+              {setupStep === 4 && (
+                <div
+                  style={{ display: "flex", flexDirection: "column", gap: "1rem", height: "100%" }}
+                >
+                  <div className="setup-tip">
+                    Compose the execution blueprint. This prompt is delivered to the coding agent
+                    during each execution cycle along with issue context details.
+                  </div>
+
+                  <div
+                    className="setup-form-group"
+                    style={{ flex: 1, display: "flex", flexDirection: "column" }}
+                  >
+                    <label className="setup-label">WORKFLOW.md Prompt Template</label>
+                    <textarea
+                      className="setup-textarea"
+                      style={{
+                        flex: 1,
+                        minHeight: "260px",
+                        fontFamily: "monospace",
+                        fontSize: "0.75rem",
+                      }}
+                      value={promptTemplate}
+                      onChange={(e) => setPromptTemplate(e.target.value)}
+                      placeholder="You are an elite coding assistant..."
+                    />
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <div className="setup-modal-footer">
+              <button
+                className="btn-setup-secondary"
+                onClick={() => {
+                  if (setupStep > 1) setSetupStep(setupStep - 1);
+                  else setIsSetupOpen(false);
+                }}
+              >
+                {setupStep === 1 ? "Cancel" : "Back"}
+              </button>
+
+              {setupStep < 4 ? (
+                <button className="btn-setup-success" onClick={() => setSetupStep(setupStep + 1)}>
+                  Next Step
+                </button>
+              ) : (
+                <button
+                  className="btn-setup-success"
+                  onClick={handleSaveWorkflow}
+                  disabled={isSavingWorkflow}
+                >
+                  {isSavingWorkflow ? "Initializing..." : "Save \u0026 Initialize"}
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

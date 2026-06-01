@@ -87,6 +87,7 @@ impl Default for AgentConfig {
 #[serde(default)]
 pub struct CodexConfig {
     pub command: String,
+    pub protocol: String,
     pub approval_policy: serde_json::Value,
     pub thread_sandbox: String,
     pub turn_sandbox_policy: Option<serde_json::Value>,
@@ -99,6 +100,7 @@ impl Default for CodexConfig {
     fn default() -> Self {
         Self {
             command: "codex app-server".to_string(),
+            protocol: "jsonrpc".to_string(),
             approval_policy: serde_json::json!({
                 "reject": {
                     "sandbox_approval": true,
@@ -160,7 +162,7 @@ pub struct Settings {
     pub polling: PollingConfig,
     pub workspace: WorkspaceConfig,
     pub agent: AgentConfig,
-    #[serde(alias = "kiro", alias = "antigravity", alias = "agy")]
+    #[serde(alias = "kiro", alias = "antigravity", alias = "agy", alias = "agents")]
     pub codex: CodexConfig,
     pub hooks: HooksConfig,
     pub server: ServerConfig,
@@ -208,15 +210,6 @@ impl Settings {
             expanded
         };
         self.workspace.root = absolute_path.to_string_lossy().to_string();
-
-        // Smart command auto-detection if it's still the default "codex app-server"
-        if self.codex.command == "codex app-server" {
-            if is_cli_installed("agy") {
-                self.codex.command = "agy run".to_string();
-            } else if is_cli_installed("kiro") {
-                self.codex.command = "kiro run".to_string();
-            }
-        }
 
         // If the command starts with a relative path (e.g. "./scratch/mock_agent.sh"),
         // resolve it relative to workflow_dir or workflow_dir's parent directory
@@ -304,6 +297,13 @@ impl Settings {
             return Err("codex.command is empty".to_string());
         }
 
+        if self.codex.protocol != "jsonrpc" && self.codex.protocol != "oneshot" {
+            return Err(format!(
+                "Unsupported agent protocol: {}. Must be 'jsonrpc' or 'oneshot'",
+                self.codex.protocol
+            ));
+        }
+
         Ok(())
     }
 }
@@ -333,17 +333,4 @@ fn expand_path(val: &str) -> PathBuf {
     } else {
         PathBuf::from(val)
     }
-}
-
-/// Checks if a CLI command exists in the system PATH
-fn is_cli_installed(name: &str) -> bool {
-    if let Some(paths) = env::var_os("PATH") {
-        for path in env::split_paths(&paths) {
-            let p = path.join(name);
-            if p.is_file() {
-                return true;
-            }
-        }
-    }
-    false
 }

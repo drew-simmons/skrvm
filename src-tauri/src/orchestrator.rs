@@ -64,6 +64,7 @@ pub struct OrchestratorState {
     pub claimed: HashSet<String>,
     pub blocked: HashMap<String, BlockedEntry>,
     pub retry_attempts: HashMap<String, RetryEntry>,
+    pub backlog: Vec<Issue>,
     pub codex_totals: CodexTotals,
     pub last_error: Option<String>,
 }
@@ -88,6 +89,7 @@ impl Orchestrator {
             claimed: HashSet::new(),
             blocked: HashMap::new(),
             retry_attempts: HashMap::new(),
+            backlog: Vec::new(),
             codex_totals: CodexTotals {
                 input_tokens: 0,
                 output_tokens: 0,
@@ -133,41 +135,46 @@ impl Orchestrator {
         self.process_retries(&settings, app_handle).await?;
 
         // 4. Fetch candidate issues and dispatch new workers
+        let candidates = match tracker::fetch_candidate_issues(&settings).await {
+            Ok(candidates) => {
+                let mut state = self.state.write().map_err(|e| e.to_string())?;
+                state.backlog = candidates.clone();
+                candidates
+            }
+            Err(e) => {
+                let mut state = self.state.write().map_err(|e| e.to_string())?;
+                state.last_error = Some(format!("Failed to fetch tracker candidates: {}", e));
+                Vec::new()
+            }
+        };
+
         let available_slots = {
             let state = self.state.read().map_err(|e| e.to_string())?;
             let running_count = state.running.len();
             state.max_concurrent_agents.saturating_sub(running_count)
         };
 
-        if available_slots > 0 {
-            match tracker::fetch_candidate_issues(&settings).await {
-                Ok(candidates) => {
-                    let mut sorted = candidates;
-                    // Sort priority: (1..4 preferred, others/null sort last), oldest first
-                    sorted.sort_by(|a, b| {
-                        let rank_a = priority_rank(a.priority);
-                        let rank_b = priority_rank(b.priority);
-                        if rank_a != rank_b {
-                            rank_a.cmp(&rank_b)
-                        } else {
-                            a.created_at.cmp(&b.created_at)
-                        }
-                    });
-
-                    for issue in sorted {
-                        if self.should_dispatch(&issue, &settings)? {
-                            self.dispatch_issue(issue, &settings, 0, app_handle).await?;
-                            if self.state.read().map_err(|e| e.to_string())?.running.len()
-                                >= settings.agent.max_concurrent_agents
-                            {
-                                break;
-                            }
-                        }
-                    }
+        if available_slots > 0 && !candidates.is_empty() {
+            let mut sorted = candidates;
+            // Sort priority: (1..4 preferred, others/null sort last), oldest first
+            sorted.sort_by(|a, b| {
+                let rank_a = priority_rank(a.priority);
+                let rank_b = priority_rank(b.priority);
+                if rank_a != rank_b {
+                    rank_a.cmp(&rank_b)
+                } else {
+                    a.created_at.cmp(&b.created_at)
                 }
-                Err(e) => {
-                    let mut state = self.state.write().map_err(|e| e.to_string())?;
-                    state.last_error = Some(format!("Failed to fetch tracker candidates: {}", e));
+            });
+
+            for issue in sorted {
+                if self.should_dispatch(&issue, &settings)? {
+                    self.dispatch_issue(issue, &settings, 0, app_handle).await?;
+                    if self.state.read().map_err(|e| e.to_string())?.running.len()
+                        >= settings.agent.max_concurrent_agents
+                    {
+                        break;
+                    }
                 }
             }
         }
@@ -186,6 +193,7 @@ impl Orchestrator {
         if state.claimed.contains(&issue.id)
             || state.running.contains_key(&issue.id)
             || state.blocked.contains_key(&issue.id)
+            || state.completed.contains(&issue.id)
         {
             return Ok(false);
         }
@@ -257,11 +265,12 @@ impl Orchestrator {
         {
             let mut state = self.state.write().map_err(|e| e.to_string())?;
             state.claimed.insert(issue_id.clone());
+            state.completed.remove(&issue_id);
         }
 
         // 2. Prepare workspace
         let workspace_root = Path::new(&settings.workspace.root);
-        let sanitized_key = path_safety::sanitize_workspace_key(&identifier);
+        let sanitized_key = path_safety::get_workspace_dir_name(&issue.identifier, &issue.title);
         let workspace_path = workspace_root.join(sanitized_key);
 
         if !workspace_path.exists() {
@@ -275,8 +284,10 @@ impl Orchestrator {
                     workspace_path
                 );
                 if let Err(e) =
-                    agent_runner::run_hook(hook, &workspace_path, settings.hooks.timeout_ms).await
+                    agent_runner::run_issue_hook(hook, &workspace_path, settings, &issue, attempt)
+                        .await
                 {
+                    std::fs::remove_dir_all(&workspace_path).ok();
                     let mut state = self.state.write().map_err(|e| e.to_string())?;
                     state.claimed.remove(&issue_id);
                     return Err(format!("after_create hook failed: {}", e));
@@ -403,25 +414,32 @@ impl Orchestrator {
 
                 match runner_res {
                     Ok(_) => {
-                        // Successful continuation tick (1000ms delay to re-fetch candidate state)
-                        println!("[Orchestrator] Worker for {} exited successfully. Scheduling continuation.", identifier);
+                        println!(
+                            "[Orchestrator] Worker for {} exited successfully.",
+                            identifier
+                        );
                         state.completed.insert(issue_id.clone());
 
-                        let now_ms = std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .unwrap()
-                            .as_millis() as u64;
+                        if should_schedule_success_continuation(&settings_clone) {
+                            // Successful continuation tick (1000ms delay to re-fetch candidate state)
+                            println!("[Orchestrator] Scheduling continuation for {}.", identifier);
 
-                        state.retry_attempts.insert(
-                            issue_id.clone(),
-                            RetryEntry {
-                                issue_id: issue_id.clone(),
-                                identifier: identifier.clone(),
-                                attempt: 0,
-                                due_at_ms: now_ms + 1000,
-                                error: None,
-                            },
-                        );
+                            let now_ms = std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .unwrap()
+                                .as_millis() as u64;
+
+                            state.retry_attempts.insert(
+                                issue_id.clone(),
+                                RetryEntry {
+                                    issue_id: issue_id.clone(),
+                                    identifier: identifier.clone(),
+                                    attempt: 0,
+                                    due_at_ms: now_ms + 1000,
+                                    error: None,
+                                },
+                            );
+                        }
                     }
                     Err(e) => {
                         // Exponential backoff retry scheduling
@@ -441,6 +459,7 @@ impl Orchestrator {
                             identifier, e, delay, next_attempt
                         );
 
+                        state.completed.remove(&issue_id);
                         state.retry_attempts.insert(
                             issue_id.clone(),
                             RetryEntry {
@@ -504,9 +523,16 @@ impl Orchestrator {
 
                         if terminal_set.contains(&issue.state.to_lowercase()) {
                             // Workspace terminal cleanup
+                            {
+                                let mut state = self.state.write().map_err(|e| e.to_string())?;
+                                state.completed.insert(issue.id.clone());
+                            }
+
                             let workspace_root = Path::new(&settings.workspace.root);
-                            let sanitized_key =
-                                path_safety::sanitize_workspace_key(&issue.identifier);
+                            let sanitized_key = path_safety::get_workspace_dir_name(
+                                &issue.identifier,
+                                &issue.title,
+                            );
                             let workspace_path = workspace_root.join(sanitized_key);
                             if workspace_path.exists() {
                                 std::fs::remove_dir_all(&workspace_path).ok();
@@ -569,7 +595,8 @@ impl Orchestrator {
                         state.claimed.remove(&issue.id);
 
                         let workspace_root = Path::new(&settings.workspace.root);
-                        let sanitized_key = path_safety::sanitize_workspace_key(&issue.identifier);
+                        let sanitized_key =
+                            path_safety::get_workspace_dir_name(&issue.identifier, &issue.title);
                         let workspace_path = workspace_root.join(sanitized_key);
                         if workspace_path.exists() {
                             std::fs::remove_dir_all(&workspace_path).ok();
@@ -649,7 +676,8 @@ impl Orchestrator {
                         state.claimed.remove(&issue.id);
 
                         let workspace_root = Path::new(&settings.workspace.root);
-                        let sanitized_key = path_safety::sanitize_workspace_key(&issue.identifier);
+                        let sanitized_key =
+                            path_safety::get_workspace_dir_name(&issue.identifier, &issue.title);
                         let workspace_path = workspace_root.join(sanitized_key);
                         if workspace_path.exists() {
                             std::fs::remove_dir_all(&workspace_path).ok();
@@ -695,7 +723,8 @@ impl Orchestrator {
             Ok(terminal_issues) => {
                 let workspace_root = Path::new(&settings.workspace.root);
                 for issue in terminal_issues {
-                    let sanitized = path_safety::sanitize_workspace_key(&issue.identifier);
+                    let sanitized =
+                        path_safety::get_workspace_dir_name(&issue.identifier, &issue.title);
                     let path = workspace_root.join(sanitized);
                     if path.exists() {
                         println!("[Cleanup] Removing terminal workspace at {:?}", path);
@@ -714,6 +743,10 @@ impl Orchestrator {
 }
 
 /// Normalizes priority field mapping (1..4 standard)
+fn should_schedule_success_continuation(settings: &Settings) -> bool {
+    settings.codex.protocol != "oneshot"
+}
+
 fn priority_rank(priority: Option<i64>) -> i64 {
     match priority {
         Some(p) if (1..=4).contains(&p) => p,
@@ -730,6 +763,22 @@ mod tests {
     fn make_test_orchestrator() -> Orchestrator {
         let store = WorkflowStore::new(std::path::PathBuf::from("dummy_workflow.md"));
         Orchestrator::new(store)
+    }
+
+    #[test]
+    fn test_success_continuation_disabled_for_oneshot() {
+        let mut settings = Settings::default();
+        settings.codex.protocol = "oneshot".to_string();
+
+        assert!(!should_schedule_success_continuation(&settings));
+    }
+
+    #[test]
+    fn test_success_continuation_enabled_for_jsonrpc() {
+        let mut settings = Settings::default();
+        settings.codex.protocol = "jsonrpc".to_string();
+
+        assert!(should_schedule_success_continuation(&settings));
     }
 
     #[test]
@@ -789,6 +838,14 @@ mod tests {
         {
             let mut state = orch.state.write().unwrap();
             state.claimed.insert("issue-1".to_string());
+        }
+        assert!(!orch.should_dispatch(&issue, &settings).unwrap());
+
+        // Completed issue should NOT be eligible
+        {
+            let mut state = orch.state.write().unwrap();
+            state.claimed.clear();
+            state.completed.insert("issue-1".to_string());
         }
         assert!(!orch.should_dispatch(&issue, &settings).unwrap());
     }

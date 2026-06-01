@@ -265,6 +265,23 @@ Prompt"#;
         let workflow_antigravity =
             parse_workflow(content_antigravity, Path::new("dummy/WORKFLOW.md")).unwrap();
         assert_eq!(workflow_antigravity.config.codex.command, "agy run");
+
+        let content_agents = r#"---
+tracker:
+  kind: "memory"
+  project_slug: "TEST"
+agents:
+  command: "codex app-server"
+  thread_sandbox: "custom-sandbox-agents"
+---
+Prompt"#;
+        let workflow_agents =
+            parse_workflow(content_agents, Path::new("dummy/WORKFLOW.md")).unwrap();
+        assert_eq!(workflow_agents.config.codex.command, "codex app-server");
+        assert_eq!(
+            workflow_agents.config.codex.thread_sandbox,
+            "custom-sandbox-agents"
+        );
     }
 
     #[test]

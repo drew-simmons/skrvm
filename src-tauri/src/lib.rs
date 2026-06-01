@@ -70,6 +70,86 @@ fn unblock_issue(issue_id: String, state: State<'_, AppState>) -> Result<(), Str
     }
 }
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct SaveWorkflowPayload {
+    pub settings: config::Settings,
+    pub prompt_template: String,
+}
+
+#[tauri::command]
+fn get_current_workflow(state: State<'_, AppState>) -> Result<Option<SaveWorkflowPayload>, String> {
+    let store = state
+        .orchestrator
+        .workflow_store
+        .read()
+        .map_err(|e| format!("Failed to read store lock: {}", e))?;
+
+    if let Some(workflow) = store.get_current() {
+        Ok(Some(SaveWorkflowPayload {
+            settings: workflow.config,
+            prompt_template: workflow.prompt_template,
+        }))
+    } else {
+        Ok(None)
+    }
+}
+
+#[tauri::command]
+async fn save_workflow(
+    payload: SaveWorkflowPayload,
+    state: State<'_, AppState>,
+) -> Result<config::Settings, String> {
+    let workflow_path = {
+        let store = state
+            .orchestrator
+            .workflow_store
+            .read()
+            .map_err(|e| format!("Failed to read store lock: {}", e))?;
+        store.file_path().to_path_buf()
+    };
+
+    // Serialize Settings to YAML front-matter
+    let yaml_str = serde_yaml::to_string(&payload.settings)
+        .map_err(|e| format!("Failed to serialize settings to YAML: {}", e))?;
+
+    // Combine YAML front matter with prompt template
+    let content = format!("---\n{}---\n\n{}", yaml_str, payload.prompt_template);
+
+    // Ensure parent directory exists
+    if let Some(parent) = workflow_path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("Failed to create parent directories: {}", e))?;
+    }
+
+    // Write content to workflow file
+    std::fs::write(&workflow_path, content)
+        .map_err(|e| format!("Failed to write WORKFLOW.md: {}", e))?;
+
+    // Force reload workflow store to activate the new configuration
+    let mut store = state
+        .orchestrator
+        .workflow_store
+        .write()
+        .map_err(|e| format!("Failed to write store lock: {}", e))?;
+
+    let workflow = store
+        .force_reload()
+        .map_err(|e| format!("Failed to reload workflow: {}", e))?;
+
+    // Update orchestrator state
+    let mut o_state = state
+        .orchestrator
+        .state
+        .write()
+        .map_err(|e| format!("Failed to write state lock: {}", e))?;
+
+    o_state.poll_interval_ms = workflow.config.polling.interval_ms;
+    o_state.max_concurrent_agents = workflow.config.agent.max_concurrent_agents;
+    o_state.last_error = None;
+
+    Ok(workflow.config)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -146,7 +226,9 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             get_orchestrator_state,
             reload_workflow,
-            unblock_issue
+            unblock_issue,
+            save_workflow,
+            get_current_workflow
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

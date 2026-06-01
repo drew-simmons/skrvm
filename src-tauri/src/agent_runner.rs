@@ -37,26 +37,24 @@ pub async fn run_hook(script: &str, cwd: &Path, timeout_ms: u64) -> Result<(), S
     let cwd = cwd.to_path_buf();
 
     let fut = async move {
-        let mut child = Command::new("bash")
+        let output = Command::new("bash")
             .args(["-c", &script])
             .current_dir(&cwd)
             .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .map_err(|e| format!("Failed to spawn hook shell: {}", e))?;
-
-        let status = child
-            .wait()
+            .output()
             .await
-            .map_err(|e| format!("Failed to wait for hook shell: {}", e))?;
+            .map_err(|e| format!("Failed to execute hook shell: {}", e))?;
 
-        if status.success() {
+        if output.status.success() {
             Ok(())
         } else {
+            let stdout_str = String::from_utf8_lossy(&output.stdout);
+            let stderr_str = String::from_utf8_lossy(&output.stderr);
             Err(format!(
-                "Hook script exited with non-zero status: {:?}",
-                status.code()
+                "Hook script exited with non-zero status: {:?}.\nStdout:\n{}\nStderr:\n{}",
+                output.status.code(),
+                stdout_str.trim(),
+                stderr_str.trim()
             ))
         }
     };
@@ -65,6 +63,43 @@ pub async fn run_hook(script: &str, cwd: &Path, timeout_ms: u64) -> Result<(), S
         Ok(res) => res,
         Err(_) => Err(format!("Hook script timed out after {}ms", timeout_ms)),
     }
+}
+
+pub fn render_hook_script(
+    script: &str,
+    settings: &Settings,
+    issue: &Issue,
+    attempt: usize,
+) -> Result<String, String> {
+    let mut jinja_env = minijinja::Environment::new();
+    jinja_env
+        .add_template("hook", script)
+        .map_err(|e| format!("Hook template error: {}", e))?;
+
+    let template = jinja_env
+        .get_template("hook")
+        .map_err(|e| format!("Failed to load hook template: {}", e))?;
+
+    template
+        .render(json!({
+            "issue": issue,
+            "attempt": attempt,
+            "project_slug": settings.tracker.project_slug,
+            "tracker": settings.tracker,
+            "workspace": settings.workspace,
+        }))
+        .map_err(|e| format!("Failed to render hook template: {}", e))
+}
+
+pub async fn run_issue_hook(
+    script: &str,
+    cwd: &Path,
+    settings: &Settings,
+    issue: &Issue,
+    attempt: usize,
+) -> Result<(), String> {
+    let rendered = render_hook_script(script, settings, issue, attempt)?;
+    run_hook(&rendered, cwd, settings.hooks.timeout_ms).await
 }
 
 /// Main entry point to run a single Codex/Kiro/Antigravity (agy) agent session for an issue inside its workspace
@@ -99,7 +134,7 @@ pub async fn run_agent(
         .await
         .ok();
 
-        if let Err(e) = run_hook(hook, &workspace, settings.hooks.timeout_ms).await {
+        if let Err(e) = run_issue_hook(hook, &workspace, &settings, &issue, attempt).await {
             return Err(format!("before_run hook failed: {}", e));
         }
     }
@@ -147,412 +182,471 @@ pub async fn run_agent(
         .map_err(|e| format!("Failed to start agent command: {}", e))?;
 
     let pid = child.id();
-    let mut stdin = child.stdin.take().ok_or("Failed to capture child stdin")?;
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or("Failed to capture child stdout")?;
-    let mut reader = BufReader::new(stdout).lines();
+    if settings.codex.protocol == "oneshot" {
+        let mut stdin = child.stdin.take().ok_or("Failed to capture child stdin")?;
+        stdin
+            .write_all(prompt.as_bytes())
+            .await
+            .map_err(|e| format!("Failed to write prompt to one-shot agent: {}", e))?;
+        stdin
+            .flush()
+            .await
+            .map_err(|e| format!("Failed to flush one-shot agent stdin: {}", e))?;
+        drop(stdin);
 
-    // 4. Perform JSON-RPC handshake
-    // 4a. Initialize
-    let init_req = json!({
-        "method": "initialize",
-        "id": 1,
-        "params": {
-            "capabilities": {
-                "experimentalApi": true
-            },
-            "clientInfo": {
-                "name": "skrvm-orchestrator",
-                "title": "Skrvm Orchestrator",
-                "version": "0.1.0"
-            }
-        }
-    });
-
-    write_json_rpc(&mut stdin, &init_req).await?;
-
-    // Await response 1
-    let init_res_line = reader
-        .next_line()
+        tx.send(AgentUpdate {
+            issue_id: issue_id.clone(),
+            event: "session_started".to_string(),
+            timestamp: chrono::Utc::now().to_rfc3339(),
+            pid,
+            session_id: Some(format!("oneshot-{}", issue_id)),
+            thread_id: None,
+            turn_id: None,
+            turn_count: 1,
+            message: Some("Launched one-shot agent process".to_string()),
+            token_delta: None,
+        })
         .await
-        .map_err(|e| format!("Handshake read failed: {}", e))?
-        .ok_or("App-server exited during initialization")?;
-    let init_res: serde_json::Value = serde_json::from_str(&init_res_line)
-        .map_err(|e| format!("Malformed initialize response: {}", e))?;
+        .ok();
 
-    if init_res["error"].is_object() {
-        return Err(format!("Initialize error: {}", init_res["error"]));
-    }
+        let turn_timeout = Duration::from_millis(settings.codex.turn_timeout_ms);
+        let status = match timeout(turn_timeout, child.wait()).await {
+            Ok(Ok(s)) => s,
+            Ok(Err(e)) => return Err(format!("One-shot agent execution failed: {}", e)),
+            Err(_) => {
+                child.kill().await.ok();
+                return Err("One-shot agent execution timed out".to_string());
+            }
+        };
 
-    // Send initialized
-    let initialized_notify = json!({
-        "method": "initialized",
-        "params": {}
-    });
-    write_json_rpc(&mut stdin, &initialized_notify).await?;
+        if status.success() {
+            tx.send(AgentUpdate {
+                issue_id: issue_id.clone(),
+                event: "turn_completed".to_string(),
+                timestamp: chrono::Utc::now().to_rfc3339(),
+                pid,
+                session_id: Some(format!("oneshot-{}", issue_id)),
+                thread_id: None,
+                turn_id: None,
+                turn_count: 1,
+                message: Some("One-shot agent completed successfully".to_string()),
+                token_delta: None,
+            })
+            .await
+            .ok();
+        } else {
+            tx.send(AgentUpdate {
+                issue_id: issue_id.clone(),
+                event: "turn_failed".to_string(),
+                timestamp: chrono::Utc::now().to_rfc3339(),
+                pid,
+                session_id: Some(format!("oneshot-{}", issue_id)),
+                thread_id: None,
+                turn_id: None,
+                turn_count: 1,
+                message: Some(format!(
+                    "One-shot agent exited with status: {:?}",
+                    status.code()
+                )),
+                token_delta: None,
+            })
+            .await
+            .ok();
+            return Err(format!(
+                "One-shot agent exited with status: {:?}",
+                status.code()
+            ));
+        }
+    } else {
+        let mut stdin = child.stdin.take().ok_or("Failed to capture child stdin")?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or("Failed to capture child stdout")?;
+        let mut reader = BufReader::new(stdout).lines();
 
-    // 4b. Start Thread
-    let thread_req = json!({
-        "method": "thread/start",
-        "id": 2,
-        "params": {
-            "approvalPolicy": settings.codex.approval_policy,
-            "sandbox": settings.codex.thread_sandbox,
-            "cwd": workspace.to_string_lossy().to_string(),
-            "dynamicTools": [
-                {
-                    "name": "linear_graphql",
-                    "description": "Execute a raw GraphQL query or mutation against Linear using Skrvm's configured auth.",
-                    "inputSchema": {
-                        "type": "object",
-                        "additionalProperties": false,
-                        "required": ["query"],
-                        "properties": {
-                            "query": {
-                                "type": "string",
-                                "description": "GraphQL query or mutation document to execute against Linear."
-                            },
-                            "variables": {
-                                "type": ["object", "null"],
-                                "description": "Optional GraphQL variables object.",
-                                "additionalProperties": true
-                            }
-                        }
-                    }
+        // 4. Perform JSON-RPC handshake
+        // 4a. Initialize
+        let init_req = json!({
+            "method": "initialize",
+            "id": 1,
+            "params": {
+                "capabilities": {
+                    "experimentalApi": true
                 },
-                {
-                    "name": "gitlab_api",
-                    "description": "Execute a REST API call against GitLab APIs (REST or GraphQL) using Skrvm's configured GitLab auth.",
-                    "inputSchema": {
-                        "type": "object",
-                        "additionalProperties": false,
-                        "required": ["path"],
-                        "properties": {
-                            "method": {
-                                "type": "string",
-                                "description": "HTTP method (GET, POST, PUT, DELETE, etc.). Defaults to GET."
-                            },
-                            "path": {
-                                "type": "string",
-                                "description": "GitLab API path suffix, e.g. 'projects/123/merge_requests' or 'user'."
-                            },
-                            "body": {
-                                "type": ["object", "null"],
-                                "description": "Optional request body object for POST/PUT requests.",
-                                "additionalProperties": true
+                "clientInfo": {
+                    "name": "skrvm-orchestrator",
+                    "title": "Skrvm Orchestrator",
+                    "version": "0.1.0"
+                }
+            }
+        });
+
+        write_json_rpc(&mut stdin, &init_req).await?;
+
+        // Await response 1
+        let init_res = read_next_response(&mut reader, "initialization").await?;
+
+        if init_res["error"].is_object() {
+            return Err(format!("Initialize error: {}", init_res["error"]));
+        }
+
+        // Send initialized
+        let initialized_notify = json!({
+            "method": "initialized",
+            "params": {}
+        });
+        write_json_rpc(&mut stdin, &initialized_notify).await?;
+
+        // 4b. Start Thread
+        let thread_req = json!({
+            "method": "thread/start",
+            "id": 2,
+            "params": {
+                "approvalPolicy": settings.codex.approval_policy,
+                "sandbox": settings.codex.thread_sandbox,
+                "cwd": workspace.to_string_lossy().to_string(),
+                "dynamicTools": [
+                    {
+                        "name": "linear_graphql",
+                        "description": "Execute a raw GraphQL query or mutation against Linear using Skrvm's configured auth.",
+                        "inputSchema": {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "required": ["query"],
+                            "properties": {
+                                "query": {
+                                    "type": "string",
+                                    "description": "GraphQL query or mutation document to execute against Linear."
+                                },
+                                "variables": {
+                                    "type": ["object", "null"],
+                                    "description": "Optional GraphQL variables object.",
+                                    "additionalProperties": true
+                                }
+                            }
+                        }
+                    },
+                    {
+                        "name": "gitlab_api",
+                        "description": "Execute a REST API call against GitLab APIs (REST or GraphQL) using Skrvm's configured GitLab auth.",
+                        "inputSchema": {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "required": ["path"],
+                            "properties": {
+                                "method": {
+                                    "type": "string",
+                                    "description": "HTTP method (GET, POST, PUT, DELETE, etc.). Defaults to GET."
+                                },
+                                "path": {
+                                    "type": "string",
+                                    "description": "GitLab API path suffix, e.g. 'projects/123/merge_requests' or 'user'."
+                                },
+                                "body": {
+                                    "type": ["object", "null"],
+                                    "description": "Optional request body object for POST/PUT requests.",
+                                    "additionalProperties": true
+                                }
                             }
                         }
                     }
-                }
-            ]
-        }
-    });
+                ]
+            }
+        });
 
-    write_json_rpc(&mut stdin, &thread_req).await?;
+        write_json_rpc(&mut stdin, &thread_req).await?;
 
-    // Await response 2
-    let thread_res_line = reader
-        .next_line()
+        // Await response 2
+        let thread_res = read_next_response(&mut reader, "thread creation").await?;
+
+        let thread_id = thread_res["result"]["thread"]["id"]
+            .as_str()
+            .ok_or_else(|| format!("Invalid thread start payload: {:?}", thread_res))?
+            .to_string();
+
+        // 4c. Start Turn
+        let turn_req = json!({
+            "method": "turn/start",
+            "id": 3,
+            "params": {
+                "threadId": thread_id,
+                "input": [
+                    {
+                        "type": "text",
+                        "text": prompt
+                    }
+                ],
+                "cwd": workspace.to_string_lossy().to_string(),
+                "title": format!("{}: {}", issue.identifier, issue.title),
+                "approvalPolicy": settings.codex.approval_policy,
+                "sandboxPolicy": settings.codex.turn_sandbox_policy
+            }
+        });
+
+        write_json_rpc(&mut stdin, &turn_req).await?;
+
+        // Await response 3
+        let turn_res = read_next_response(&mut reader, "turn start").await?;
+
+        let turn_id = turn_res["result"]["turn"]["id"]
+            .as_str()
+            .ok_or_else(|| format!("Invalid turn start payload: {:?}", turn_res))?
+            .to_string();
+
+        let session_id = format!("{}-{}", thread_id, turn_id);
+
+        // 5. Broadcast session started
+        tx.send(AgentUpdate {
+            issue_id: issue_id.clone(),
+            event: "session_started".to_string(),
+            timestamp: chrono::Utc::now().to_rfc3339(),
+            pid,
+            session_id: Some(session_id.clone()),
+            thread_id: Some(thread_id.clone()),
+            turn_id: Some(turn_id.clone()),
+            turn_count: 1,
+            message: Some("App-server handshake successful".to_string()),
+            token_delta: None,
+        })
         .await
-        .map_err(|e| format!("Thread read failed: {}", e))?
-        .ok_or("App-server exited during thread creation")?;
-    let thread_res: serde_json::Value = serde_json::from_str(&thread_res_line)
-        .map_err(|e| format!("Malformed thread response: {}", e))?;
+        .ok();
 
-    let thread_id = thread_res["result"]["thread"]["id"]
-        .as_str()
-        .ok_or_else(|| format!("Invalid thread start payload: {:?}", thread_res))?
-        .to_string();
+        // 6. Streaming turn reader loop
+        let turn_count = 1;
+        let turn_timeout = Duration::from_millis(settings.codex.turn_timeout_ms);
+        let mut last_activity = std::time::Instant::now();
 
-    // 4c. Start Turn
-    let turn_req = json!({
-        "method": "turn/start",
-        "id": 3,
-        "params": {
-            "threadId": thread_id,
-            "input": [
-                {
-                    "type": "text",
-                    "text": prompt
+        loop {
+            // Read next line with timeout
+            let read_fut = reader.next_line();
+            let line_res = match timeout(Duration::from_millis(1000), read_fut).await {
+                Ok(Ok(Some(line))) => {
+                    last_activity = std::time::Instant::now();
+                    Ok(Some(line))
                 }
-            ],
-            "cwd": workspace.to_string_lossy().to_string(),
-            "title": format!("{}: {}", issue.identifier, issue.title),
-            "approvalPolicy": settings.codex.approval_policy,
-            "sandboxPolicy": settings.codex.turn_sandbox_policy
-        }
-    });
-
-    write_json_rpc(&mut stdin, &turn_req).await?;
-
-    // Await response 3
-    let turn_res_line = reader
-        .next_line()
-        .await
-        .map_err(|e| format!("Turn read failed: {}", e))?
-        .ok_or("App-server exited during turn start")?;
-    let turn_res: serde_json::Value = serde_json::from_str(&turn_res_line)
-        .map_err(|e| format!("Malformed turn response: {}", e))?;
-
-    let turn_id = turn_res["result"]["turn"]["id"]
-        .as_str()
-        .ok_or_else(|| format!("Invalid turn start payload: {:?}", turn_res))?
-        .to_string();
-
-    let session_id = format!("{}-{}", thread_id, turn_id);
-
-    // 5. Broadcast session started
-    tx.send(AgentUpdate {
-        issue_id: issue_id.clone(),
-        event: "session_started".to_string(),
-        timestamp: chrono::Utc::now().to_rfc3339(),
-        pid,
-        session_id: Some(session_id.clone()),
-        thread_id: Some(thread_id.clone()),
-        turn_id: Some(turn_id.clone()),
-        turn_count: 1,
-        message: Some("App-server handshake successful".to_string()),
-        token_delta: None,
-    })
-    .await
-    .ok();
-
-    // 6. Streaming turn reader loop
-    let turn_count = 1;
-    let turn_timeout = Duration::from_millis(settings.codex.turn_timeout_ms);
-    let mut last_activity = std::time::Instant::now();
-
-    loop {
-        // Read next line with timeout
-        let read_fut = reader.next_line();
-        let line_res = match timeout(Duration::from_millis(1000), read_fut).await {
-            Ok(Ok(Some(line))) => {
-                last_activity = std::time::Instant::now();
-                Ok(Some(line))
-            }
-            Ok(Ok(None)) => Ok(None),
-            Ok(Err(e)) => Err(format!("Read stream error: {}", e)),
-            Err(_) => {
-                // Read timeout (1s) is normal, we check stall timeout and turn timeout
-                if last_activity.elapsed() > turn_timeout {
-                    return Err("Turn execution timed out".to_string());
+                Ok(Ok(None)) => Ok(None),
+                Ok(Err(e)) => Err(format!("Read stream error: {}", e)),
+                Err(_) => {
+                    // Read timeout (1s) is normal, we check stall timeout and turn timeout
+                    if last_activity.elapsed() > turn_timeout {
+                        return Err("Turn execution timed out".to_string());
+                    }
+                    Ok(Some(String::new()))
                 }
-                Ok(Some(String::new()))
-            }
-        };
+            };
 
-        let line = match line_res? {
-            Some(line) => line,
-            None => {
-                println!(
-                    "[Runner] Stdio stream closed for issue {}",
-                    issue.identifier
-                );
-                break;
-            }
-        };
-
-        if line.trim().is_empty() {
-            continue;
-        }
-
-        let msg: serde_json::Value = match serde_json::from_str(&line) {
-            Ok(v) => v,
-            Err(_) => {
-                // Non-JSON output (stderr/diagnostic)
-                continue;
-            }
-        };
-
-        // Handle JSON-RPC method callbacks from app-server
-        if let Some(method) = msg["method"].as_str() {
-            match method {
-                "turn/completed" => {
-                    tx.send(AgentUpdate {
-                        issue_id: issue_id.clone(),
-                        event: "turn_completed".to_string(),
-                        timestamp: chrono::Utc::now().to_rfc3339(),
-                        pid,
-                        session_id: Some(session_id.clone()),
-                        thread_id: Some(thread_id.clone()),
-                        turn_id: Some(turn_id.clone()),
-                        turn_count,
-                        message: Some("Turn completed successfully".to_string()),
-                        token_delta: extract_token_delta(&msg),
-                    })
-                    .await
-                    .ok();
+            let line = match line_res? {
+                Some(line) => line,
+                None => {
+                    println!(
+                        "[Runner] Stdio stream closed for issue {}",
+                        issue.identifier
+                    );
                     break;
                 }
-                "turn/failed" | "turn/cancelled" => {
-                    let err_msg = msg["params"]["error"]["message"]
-                        .as_str()
-                        .unwrap_or("Unknown failure");
-                    tx.send(AgentUpdate {
-                        issue_id: issue_id.clone(),
-                        event: "turn_failed".to_string(),
-                        timestamp: chrono::Utc::now().to_rfc3339(),
-                        pid,
-                        session_id: Some(session_id.clone()),
-                        thread_id: Some(thread_id.clone()),
-                        turn_id: Some(turn_id.clone()),
-                        turn_count,
-                        message: Some(format!("Turn failed: {}", err_msg)),
-                        token_delta: extract_token_delta(&msg),
-                    })
-                    .await
-                    .ok();
-                    return Err(format!("Turn failed: {}", err_msg));
+            };
+
+            if line.trim().is_empty() {
+                continue;
+            }
+
+            let msg: serde_json::Value = match serde_json::from_str(&line) {
+                Ok(v) => v,
+                Err(_) => {
+                    // Non-JSON output (stderr/diagnostic)
+                    continue;
                 }
-                "item/commandExecution/requestApproval" | "execCommandApproval" => {
-                    let id = &msg["id"];
-                    println!("[Runner] Auto-approving command execution approval request");
-                    let decision = if method == "execCommandApproval" {
-                        "approved_for_session"
-                    } else {
-                        "acceptForSession"
-                    };
-                    let approve_res = json!({
-                        "id": id,
-                        "result": { "decision": decision }
-                    });
-                    write_json_rpc(&mut stdin, &approve_res).await?;
+            };
 
-                    tx.send(AgentUpdate {
-                        issue_id: issue_id.clone(),
-                        event: "approval_auto_approved".to_string(),
-                        timestamp: chrono::Utc::now().to_rfc3339(),
-                        pid,
-                        session_id: Some(session_id.clone()),
-                        thread_id: Some(thread_id.clone()),
-                        turn_id: Some(turn_id.clone()),
-                        turn_count,
-                        message: Some(format!(
-                            "Auto-approved command execution: {}",
-                            msg["params"]["command"].as_str().unwrap_or("")
-                        )),
-                        token_delta: None,
-                    })
-                    .await
-                    .ok();
-                }
-                "item/fileChange/requestApproval" | "applyPatchApproval" => {
-                    let id = &msg["id"];
-                    println!("[Runner] Auto-approving patch/file change approval request");
-                    let decision = if method == "applyPatchApproval" {
-                        "approved_for_session"
-                    } else {
-                        "acceptForSession"
-                    };
-                    let approve_res = json!({
-                        "id": id,
-                        "result": { "decision": decision }
-                    });
-                    write_json_rpc(&mut stdin, &approve_res).await?;
-
-                    tx.send(AgentUpdate {
-                        issue_id: issue_id.clone(),
-                        event: "approval_auto_approved".to_string(),
-                        timestamp: chrono::Utc::now().to_rfc3339(),
-                        pid,
-                        session_id: Some(session_id.clone()),
-                        thread_id: Some(thread_id.clone()),
-                        turn_id: Some(turn_id.clone()),
-                        turn_count,
-                        message: Some("Auto-approved file patch/change".to_string()),
-                        token_delta: None,
-                    })
-                    .await
-                    .ok();
-                }
-                "item/tool/requestUserInput" => {
-                    // Stalls turns immediately under high-trust non-interactive configurations
-                    tx.send(AgentUpdate {
-                        issue_id: issue_id.clone(),
-                        event: "turn_input_required".to_string(),
-                        timestamp: chrono::Utc::now().to_rfc3339(),
-                        pid,
-                        session_id: Some(session_id.clone()),
-                        thread_id: Some(thread_id.clone()),
-                        turn_id: Some(turn_id.clone()),
-                        turn_count,
-                        message: Some("Operator manual input required".to_string()),
-                        token_delta: None,
-                    })
-                    .await
-                    .ok();
-
-                    // Exit turn loop with input required state
-                    return Err("turn_input_required".to_string());
-                }
-                "item/tool/call" => {
-                    let id = &msg["id"];
-                    let tool_name = msg["params"]["name"].as_str().unwrap_or("");
-                    let arguments = &msg["params"]["arguments"];
-
-                    let result = if tool_name == "linear_graphql" {
-                        let query = arguments["query"].as_str().unwrap_or("");
-                        let vars = arguments["variables"].clone();
-
-                        match execute_linear_graphql(&settings, query, vars).await {
-                            Ok(output) => json!({
-                                "success": true,
-                                "output": output,
-                                "contentItems": [{"type": "inputText", "text": output}]
-                            }),
-                            Err(e) => json!({
-                                "success": false,
-                                "output": format!("Linear GraphQL tool error: {}", e),
-                                "contentItems": [{"type": "inputText", "text": format!("Error: {}", e)}]
-                            }),
-                        }
-                    } else if tool_name == "gitlab_api" {
-                        let method = arguments["method"].as_str().unwrap_or("GET");
-                        let path = arguments["path"].as_str().unwrap_or("");
-                        let body = arguments["body"].clone();
-
-                        match execute_gitlab_api(method, path, body).await {
-                            Ok(output) => json!({
-                                "success": true,
-                                "output": output,
-                                "contentItems": [{"type": "inputText", "text": output}]
-                            }),
-                            Err(e) => json!({
-                                "success": false,
-                                "output": format!("GitLab API tool error: {}", e),
-                                "contentItems": [{"type": "inputText", "text": format!("Error: {}", e)}]
-                            }),
-                        }
-                    } else {
-                        json!({
-                            "success": false,
-                            "output": format!("Unsupported tool: {}", tool_name),
-                            "contentItems": [{"type": "inputText", "text": "Unsupported tool"}]
+            // Handle JSON-RPC method callbacks from app-server
+            if let Some(method) = msg["method"].as_str() {
+                match method {
+                    "turn/completed" => {
+                        tx.send(AgentUpdate {
+                            issue_id: issue_id.clone(),
+                            event: "turn_completed".to_string(),
+                            timestamp: chrono::Utc::now().to_rfc3339(),
+                            pid,
+                            session_id: Some(session_id.clone()),
+                            thread_id: Some(thread_id.clone()),
+                            turn_id: Some(turn_id.clone()),
+                            turn_count,
+                            message: Some("Turn completed successfully".to_string()),
+                            token_delta: extract_token_delta(&msg),
                         })
-                    };
+                        .await
+                        .ok();
+                        break;
+                    }
+                    "turn/failed" | "turn/cancelled" => {
+                        let err_msg = msg["params"]["error"]["message"]
+                            .as_str()
+                            .unwrap_or("Unknown failure");
+                        tx.send(AgentUpdate {
+                            issue_id: issue_id.clone(),
+                            event: "turn_failed".to_string(),
+                            timestamp: chrono::Utc::now().to_rfc3339(),
+                            pid,
+                            session_id: Some(session_id.clone()),
+                            thread_id: Some(thread_id.clone()),
+                            turn_id: Some(turn_id.clone()),
+                            turn_count,
+                            message: Some(format!("Turn failed: {}", err_msg)),
+                            token_delta: extract_token_delta(&msg),
+                        })
+                        .await
+                        .ok();
+                        return Err(format!("Turn failed: {}", err_msg));
+                    }
+                    "item/commandExecution/requestApproval" | "execCommandApproval" => {
+                        let id = &msg["id"];
+                        println!("[Runner] Auto-approving command execution approval request");
+                        let decision = if method == "execCommandApproval" {
+                            "approved_for_session"
+                        } else {
+                            "acceptForSession"
+                        };
+                        let approve_res = json!({
+                            "id": id,
+                            "result": { "decision": decision }
+                        });
+                        write_json_rpc(&mut stdin, &approve_res).await?;
 
-                    let tool_reply = json!({
-                        "id": id,
-                        "result": result
-                    });
-                    write_json_rpc(&mut stdin, &tool_reply).await?;
+                        tx.send(AgentUpdate {
+                            issue_id: issue_id.clone(),
+                            event: "approval_auto_approved".to_string(),
+                            timestamp: chrono::Utc::now().to_rfc3339(),
+                            pid,
+                            session_id: Some(session_id.clone()),
+                            thread_id: Some(thread_id.clone()),
+                            turn_id: Some(turn_id.clone()),
+                            turn_count,
+                            message: Some(format!(
+                                "Auto-approved command execution: {}",
+                                msg["params"]["command"].as_str().unwrap_or("")
+                            )),
+                            token_delta: None,
+                        })
+                        .await
+                        .ok();
+                    }
+                    "item/fileChange/requestApproval" | "applyPatchApproval" => {
+                        let id = &msg["id"];
+                        println!("[Runner] Auto-approving patch/file change approval request");
+                        let decision = if method == "applyPatchApproval" {
+                            "approved_for_session"
+                        } else {
+                            "acceptForSession"
+                        };
+                        let approve_res = json!({
+                            "id": id,
+                            "result": { "decision": decision }
+                        });
+                        write_json_rpc(&mut stdin, &approve_res).await?;
+
+                        tx.send(AgentUpdate {
+                            issue_id: issue_id.clone(),
+                            event: "approval_auto_approved".to_string(),
+                            timestamp: chrono::Utc::now().to_rfc3339(),
+                            pid,
+                            session_id: Some(session_id.clone()),
+                            thread_id: Some(thread_id.clone()),
+                            turn_id: Some(turn_id.clone()),
+                            turn_count,
+                            message: Some("Auto-approved file patch/change".to_string()),
+                            token_delta: None,
+                        })
+                        .await
+                        .ok();
+                    }
+                    "item/tool/requestUserInput" => {
+                        // Stalls turns immediately under high-trust non-interactive configurations
+                        tx.send(AgentUpdate {
+                            issue_id: issue_id.clone(),
+                            event: "turn_input_required".to_string(),
+                            timestamp: chrono::Utc::now().to_rfc3339(),
+                            pid,
+                            session_id: Some(session_id.clone()),
+                            thread_id: Some(thread_id.clone()),
+                            turn_id: Some(turn_id.clone()),
+                            turn_count,
+                            message: Some("Operator manual input required".to_string()),
+                            token_delta: None,
+                        })
+                        .await
+                        .ok();
+
+                        // Exit turn loop with input required state
+                        return Err("turn_input_required".to_string());
+                    }
+                    "item/tool/call" => {
+                        let id = &msg["id"];
+                        let tool_name = msg["params"]["name"].as_str().unwrap_or("");
+                        let arguments = &msg["params"]["arguments"];
+
+                        let result = if tool_name == "linear_graphql" {
+                            let query = arguments["query"].as_str().unwrap_or("");
+                            let vars = arguments["variables"].clone();
+
+                            match execute_linear_graphql(&settings, query, vars).await {
+                                Ok(output) => json!({
+                                    "success": true,
+                                    "output": output,
+                                    "contentItems": [{"type": "inputText", "text": output}]
+                                }),
+                                Err(e) => json!({
+                                    "success": false,
+                                    "output": format!("Linear GraphQL tool error: {}", e),
+                                    "contentItems": [{"type": "inputText", "text": format!("Error: {}", e)}]
+                                }),
+                            }
+                        } else if tool_name == "gitlab_api" {
+                            let method = arguments["method"].as_str().unwrap_or("GET");
+                            let path = arguments["path"].as_str().unwrap_or("");
+                            let body = arguments["body"].clone();
+
+                            match execute_gitlab_api(method, path, body).await {
+                                Ok(output) => json!({
+                                    "success": true,
+                                    "output": output,
+                                    "contentItems": [{"type": "inputText", "text": output}]
+                                }),
+                                Err(e) => json!({
+                                    "success": false,
+                                    "output": format!("GitLab API tool error: {}", e),
+                                    "contentItems": [{"type": "inputText", "text": format!("Error: {}", e)}]
+                                }),
+                            }
+                        } else {
+                            json!({
+                                "success": false,
+                                "output": format!("Unsupported tool: {}", tool_name),
+                                "contentItems": [{"type": "inputText", "text": "Unsupported tool"}]
+                            })
+                        };
+
+                        let tool_reply = json!({
+                            "id": id,
+                            "result": result
+                        });
+                        write_json_rpc(&mut stdin, &tool_reply).await?;
+                    }
+                    _ => {}
                 }
-                _ => {}
             }
         }
-    }
 
-    // 7. Cleanup active child process cleanly
-    let stop_notify = json!({
-        "method": "thread/stop",
-        "params": {
-            "threadId": thread_id
-        }
-    });
-    write_json_rpc(&mut stdin, &stop_notify).await.ok();
-    child.kill().await.ok();
+        // 7. Cleanup active child process cleanly
+        let stop_notify = json!({
+            "method": "thread/stop",
+            "params": {
+                "threadId": thread_id
+            }
+        });
+        write_json_rpc(&mut stdin, &stop_notify).await.ok();
+        child.kill().await.ok();
+    }
 
     // 8. Run after_run hook if configured
     if let Some(ref hook) = settings.hooks.after_run {
@@ -560,9 +654,24 @@ pub async fn run_agent(
             "[Runner] Running after_run hook for issue {}",
             issue.identifier
         );
-        run_hook(hook, &workspace, settings.hooks.timeout_ms)
-            .await
-            .ok();
+        tx.send(AgentUpdate {
+            issue_id: issue_id.clone(),
+            event: "publishing_workspace".to_string(),
+            timestamp: chrono::Utc::now().to_rfc3339(),
+            pid: None,
+            session_id: None,
+            thread_id: None,
+            turn_id: None,
+            turn_count: 0,
+            message: Some("Running after_run workspace hook".to_string()),
+            token_delta: None,
+        })
+        .await
+        .ok();
+
+        if let Err(e) = run_issue_hook(hook, &workspace, &settings, &issue, attempt).await {
+            return Err(format!("after_run hook failed: {}", e));
+        }
     }
 
     Ok(())
@@ -587,6 +696,43 @@ async fn write_json_rpc(
         .map_err(|e| format!("Failed to flush JSON-RPC stdio: {}", e))?;
 
     Ok(())
+}
+
+/// Helper to read the next standard response from the process stdout, bypassing any async notifications
+async fn read_next_response(
+    reader: &mut tokio::io::Lines<tokio::io::BufReader<tokio::process::ChildStdout>>,
+    context: &str,
+) -> Result<serde_json::Value, String> {
+    loop {
+        let line = reader
+            .next_line()
+            .await
+            .map_err(|e| format!("{} read failed: {}", context, e))?
+            .ok_or_else(|| format!("App-server exited during {}", context))?;
+
+        if line.trim().is_empty() {
+            continue;
+        }
+
+        let msg: serde_json::Value = match serde_json::from_str(&line) {
+            Ok(v) => v,
+            Err(_) => {
+                // Ignore non-JSON output (e.g. debugging/diagnostic text) during handshake
+                continue;
+            }
+        };
+
+        // If it's a notification/request (has "method" field), ignore/log it and keep reading
+        if msg.get("method").is_some() {
+            println!(
+                "[Runner] Skipping asynchronous message during handshake ({}): {:?}",
+                context, msg
+            );
+            continue;
+        }
+
+        return Ok(msg);
+    }
 }
 
 /// Helper to extract token usage delta from response completed events
@@ -726,6 +872,44 @@ mod tests {
     use std::fs::File;
     use std::io::Write;
 
+    fn test_issue() -> Issue {
+        Issue {
+            id: "13".to_string(),
+            identifier: "13".to_string(),
+            title: "chore(deps): bump actions/checkout from 4 to 6".to_string(),
+            description: Some("Test description".to_string()),
+            priority: Some(3),
+            state: "Todo".to_string(),
+            branch_name: None,
+            url: None,
+            assignee_id: None,
+            blocked_by: vec![],
+            labels: vec![],
+            assigned_to_worker: true,
+            created_at: None,
+            updated_at: None,
+        }
+    }
+
+    #[test]
+    fn test_render_hook_script_with_issue_and_project_slug() {
+        let mut settings = Settings::default();
+        settings.tracker.project_slug = "drew-simmons/skrvm".to_string();
+
+        let rendered = render_hook_script(
+            "git clone git@github.com:{{ project_slug }}.git . && git checkout -b skrvm-{{ issue.identifier }}",
+            &settings,
+            &test_issue(),
+            0,
+        )
+        .unwrap();
+
+        assert_eq!(
+            rendered,
+            "git clone git@github.com:drew-simmons/skrvm.git . && git checkout -b skrvm-13"
+        );
+    }
+
     #[tokio::test]
     async fn test_execute_gitlab_api() {
         use tokio::io::AsyncReadExt;
@@ -849,6 +1033,176 @@ echo '{"method":"turn/completed","params":{"usage":{"input_tokens":120,"output_t
         let delta = final_update.token_delta.as_ref().unwrap();
         assert_eq!(delta.input_tokens, 120);
         assert_eq!(delta.output_tokens, 80);
+
+        // Cleanup
+        std::fs::remove_dir_all(&workspace).ok();
+    }
+
+    #[tokio::test]
+    async fn test_run_agent_stdio_handshake_with_notifications() {
+        // Create temp workspace directory safely
+        let mut workspace = std::env::temp_dir();
+        workspace.push(format!(
+            "skrvm_agent_notification_test_{}",
+            chrono::Utc::now().timestamp_millis()
+        ));
+        std::fs::create_dir_all(&workspace).unwrap();
+
+        // Write the mock agent bash script with background notifications and diagnostic lines
+        let script_path = workspace.join("mock_agent.sh");
+        {
+            let mut file = File::create(&script_path).unwrap();
+            let script_content = r#"#!/bin/bash
+echo 'Starting up mock server...'
+echo '{"method":"remoteControl/status/changed","params":{"status":"disabled"}}'
+read -r line # Read initialize
+echo '{"id":1,"result":{"capabilities":{}}}'
+read -r line # Read initialized
+echo '{"method":"someOtherNotification","params":{}}'
+read -r line # Read thread/start
+echo '{"id":2,"result":{"thread":{"id":"test-thread-id"}}}'
+echo '{"method":"anotherNotificationBeforeTurn","params":{}}'
+read -r line # Read turn/start
+echo '{"id":3,"result":{"turn":{"id":"test-turn-id"}}}'
+sleep 0.1
+echo '{"method":"turn/completed","params":{"usage":{"input_tokens":120,"output_tokens":80}}}'
+"#;
+            file.write_all(script_content.as_bytes()).unwrap();
+        }
+
+        // Make script executable (on unix systems)
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = std::fs::metadata(&script_path).unwrap().permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(&script_path, perms).unwrap();
+        }
+
+        // Setup settings with the mock command
+        let mut settings = Settings::default();
+        settings.codex.command = format!("bash {:?}", script_path);
+        settings.workspace.root = workspace.to_string_lossy().to_string();
+
+        let issue = Issue {
+            id: "test-issue-123-notif".to_string(),
+            identifier: "TEST-102".to_string(),
+            title: "Test Issue with Notifications".to_string(),
+            description: Some("Test description".to_string()),
+            priority: Some(3),
+            state: "Todo".to_string(),
+            branch_name: None,
+            url: None,
+            assignee_id: None,
+            blocked_by: vec![],
+            labels: vec![],
+            assigned_to_worker: true,
+            created_at: None,
+            updated_at: None,
+        };
+
+        let (tx, mut rx) = mpsc::channel(100);
+        let prompt_template =
+            "You are a helpful coding assistant. Solve this issue: {{ issue.title }}".to_string();
+
+        let runner_res =
+            run_agent(issue, workspace.clone(), settings, prompt_template, 0, tx).await;
+
+        assert!(runner_res.is_ok());
+
+        // Drain channel and verify events
+        let mut events = Vec::new();
+        while let Some(update) = rx.recv().await {
+            events.push(update);
+        }
+
+        // Verify events were broadcast correctly
+        assert!(events.iter().any(|e| e.event == "session_started"));
+        assert!(events.iter().any(|e| e.event == "turn_completed"));
+
+        let final_update = events.iter().find(|e| e.event == "turn_completed").unwrap();
+        assert_eq!(final_update.turn_count, 1);
+        let delta = final_update.token_delta.as_ref().unwrap();
+        assert_eq!(delta.input_tokens, 120);
+        assert_eq!(delta.output_tokens, 80);
+
+        // Cleanup
+        std::fs::remove_dir_all(&workspace).ok();
+    }
+
+    #[tokio::test]
+    async fn test_run_agent_oneshot_execution() {
+        // Create temp workspace directory safely
+        let mut workspace = std::env::temp_dir();
+        workspace.push(format!(
+            "skrvm_agent_oneshot_test_{}",
+            chrono::Utc::now().timestamp_millis()
+        ));
+        std::fs::create_dir_all(&workspace).unwrap();
+
+        // Write the mock one-shot bash script
+        let script_path = workspace.join("mock_oneshot.sh");
+        {
+            let mut file = File::create(&script_path).unwrap();
+            let script_content = r#"#!/bin/bash
+# Read prompt from stdin and do nothing
+cat > /dev/null
+# Exit successfully
+exit 0
+"#;
+            file.write_all(script_content.as_bytes()).unwrap();
+        }
+
+        // Make script executable
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = std::fs::metadata(&script_path).unwrap().permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(&script_path, perms).unwrap();
+        }
+
+        // Setup settings with the mock command and oneshot protocol
+        let mut settings = Settings::default();
+        settings.codex.command = format!("bash {:?}", script_path);
+        settings.codex.protocol = "oneshot".to_string();
+        settings.workspace.root = workspace.to_string_lossy().to_string();
+
+        let issue = Issue {
+            id: "test-issue-oneshot".to_string(),
+            identifier: "TEST-103".to_string(),
+            title: "Test One-Shot Issue".to_string(),
+            description: Some("Test description".to_string()),
+            priority: Some(3),
+            state: "Todo".to_string(),
+            branch_name: None,
+            url: None,
+            assignee_id: None,
+            blocked_by: vec![],
+            labels: vec![],
+            assigned_to_worker: true,
+            created_at: None,
+            updated_at: None,
+        };
+
+        let (tx, mut rx) = mpsc::channel(100);
+        let prompt_template =
+            "You are a helpful coding assistant. Solve this issue: {{ issue.title }}".to_string();
+
+        let runner_res =
+            run_agent(issue, workspace.clone(), settings, prompt_template, 0, tx).await;
+
+        assert!(runner_res.is_ok());
+
+        // Drain channel and verify events
+        let mut events = Vec::new();
+        while let Some(update) = rx.recv().await {
+            events.push(update);
+        }
+
+        // Verify events were broadcast correctly
+        assert!(events.iter().any(|e| e.event == "session_started"));
+        assert!(events.iter().any(|e| e.event == "turn_completed"));
 
         // Cleanup
         std::fs::remove_dir_all(&workspace).ok();
