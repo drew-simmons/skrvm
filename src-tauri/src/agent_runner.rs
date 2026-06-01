@@ -38,7 +38,7 @@ pub async fn run_hook(script: &str, cwd: &Path, timeout_ms: u64) -> Result<(), S
 
     let fut = async move {
         let mut child = Command::new("bash")
-            .args(["-lc", &script])
+            .args(["-c", &script])
             .current_dir(&cwd)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
@@ -138,7 +138,7 @@ pub async fn run_agent(
     .ok();
 
     let mut child = Command::new("bash")
-        .args(["-lc", &settings.codex.command])
+        .args(["-c", &settings.codex.command])
         .current_dir(&workspace)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
