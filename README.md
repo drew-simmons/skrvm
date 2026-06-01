@@ -103,7 +103,7 @@ Each active ticket receives a dedicated sandboxed workspace directory inside the
   alphanumeric safe path names.
 - **Hook Execution**:
   - Runs `after_create` (e.g., `git init`) immediately after directory creation.
-  - Runs `before_run` (e.g., `npm install`) before spawning the agent.
+  - Runs `before_run` (e.g., `pnpm install`) before spawning the agent.
   - Runs `after_run` (e.g., `git commit -m 'incremental progress'`) after each
     successful turn.
 

@@ -68,7 +68,7 @@ hooks:
   after_create: "git clone git@github.com:my-org/my-target-project.git . && git checkout -b skrvm-{{ issue.identifier }}"
 
   # 2. Runs before launching the coding agent. Prepares environment dependencies.
-  before_run: "npm install"
+  before_run: "pnpm install"
 
   # 3. Runs after each successful turn. Commits and pushes progress back to origin.
   after_run: "git add . && git commit -m 'skrvm: turn progression progress' --allow-empty && git push origin HEAD"
