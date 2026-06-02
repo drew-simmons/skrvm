@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.6.0](https://github.com/drew-simmons/skrvm/compare/v0.5.0...v0.6.0) (2026-06-02)
+
+
+### Features
+
+* spec driven development workflows ([816176a](https://github.com/drew-simmons/skrvm/commit/816176a7e826ebea7cff287bd30483485fe3f583))
+* support gitlab issues ([4e65ed3](https://github.com/drew-simmons/skrvm/commit/4e65ed379a197faa4e2b274c3d524859f09a6ddb))
+
 ## [0.5.0](https://github.com/drew-simmons/skrvm/compare/v0.4.0...v0.5.0) (2026-06-01)
 
 
