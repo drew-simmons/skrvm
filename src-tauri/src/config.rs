@@ -166,11 +166,14 @@ pub struct Settings {
     pub codex: CodexConfig,
     pub hooks: HooksConfig,
     pub server: ServerConfig,
+    #[serde(skip)]
+    pub project_dir: Option<String>,
 }
 
 impl Settings {
     /// Finalizes settings by resolving environment references (e.g. `$LINEAR_API_KEY`) and expanding paths
     pub fn finalize(&mut self, workflow_dir: &Path) {
+        self.project_dir = Some(workflow_dir.to_string_lossy().to_string());
         // Tracker env resolution
         if let Some(ref api_key) = self.tracker.api_key {
             self.tracker.api_key = resolve_env_ref(api_key)

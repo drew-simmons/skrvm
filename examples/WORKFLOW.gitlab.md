@@ -67,13 +67,13 @@ hooks:
   before_run: "pnpm install"
 
   # 3. Runs after each successful turn. Commits and pushes progress back to origin.
-  after_run: "git add . && git commit -m 'skrvm: turn progression progress' --allow-empty && git push -u origin HEAD:{{ issue.branch_name }} && (if git remote get-url origin | grep -q 'github.com'; then gh pr create --title '{{ issue.title }}' --body 'Automated changes by Skrvm.' --head '{{ issue.branch_name }}' || true; elif git remote get-url origin | grep -q 'gitlab.com'; then glab mr create --title '{{ issue.title }}' --description 'Automated changes by Skrvm.' --source-branch '{{ issue.branch_name }}' || true; fi)"
+  after_run: "git add . && git commit -m 'chore(skrvm): turn progression progress' --allow-empty && git push -u origin HEAD:{{ issue.branch_name }} && (if git remote get-url origin | grep -q 'github.com'; then gh pr create --title '{{ issue.title }}' --body 'Automated changes by Skrvm.' --head '{{ issue.branch_name }}' || true; elif git remote get-url origin | grep -q 'gitlab.com'; then glab mr create --title '{{ issue.title }}' --description 'Automated changes by Skrvm.' --source-branch '{{ issue.branch_name }}' || true; fi)"
 
   # Timeout for each shell hook (in milliseconds)
   timeout_ms: 120000
 ---
 
-You are Antigravity, an elite agentic coding assistant spawned by the Skrvm
+You are {{ agent_name }}, an elite agentic coding assistant spawned by the Skrvm
 orchestrator to resolve GitLab Issue **#{{ issue.identifier }}**.
 
 {% if attempt > 0 %}

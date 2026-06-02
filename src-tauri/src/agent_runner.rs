@@ -87,6 +87,7 @@ pub fn render_hook_script(
             "project_slug": settings.tracker.project_slug,
             "tracker": settings.tracker,
             "workspace": settings.workspace,
+            "project_dir": settings.project_dir,
         }))
         .map_err(|e| format!("Failed to render hook template: {}", e))
 }
@@ -149,10 +150,18 @@ pub async fn run_agent(
         .get_template("prompt")
         .map_err(|e| format!("Failed to load template: {}", e))?;
 
+    let agent_name = match settings.codex.command.as_str() {
+        c if c.contains("agy") || c.contains("antigravity") => "Antigravity",
+        c if c.contains("kiro") => "Kiro",
+        c if c.contains("codex") => "Codex",
+        _ => "Agent",
+    };
+
     let prompt = template
         .render(json!({
             "issue": issue,
             "attempt": attempt,
+            "agent_name": agent_name,
         }))
         .map_err(|e| format!("Failed to render prompt: {}", e))?;
 

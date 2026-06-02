@@ -109,8 +109,35 @@ function App() {
 
   // Setup Wizard State
   const [isSetupOpen, setIsSetupOpen] = useState<boolean>(false);
-  const [setupStep, setSetupStep] = useState<number>(1);
   const [isSavingWorkflow, setIsSavingWorkflow] = useState<boolean>(false);
+  const [showAdvancedSettings, setShowAdvancedSettings] = useState<boolean>(false);
+
+  // Setup Wizard Form & Auto-Detect States
+  const [projectDir, setProjectDir] = useState<string>("");
+  const [detectedGitInfo, setDetectedGitInfo] = useState<any | null>(null);
+  const [presetSelection, setPresetSelection] = useState<string>("local_git");
+  const [showCustomHooks, setShowCustomHooks] = useState<boolean>(false);
+
+  // Verification states per step
+  const [step1Verified, setStep1Verified] = useState<boolean>(false);
+  const [step1Loading, setStep1Loading] = useState<boolean>(false);
+  const [step1Error, setStep1Error] = useState<string | null>(null);
+  const [step1SuccessMsg, setStep1SuccessMsg] = useState<string | null>(null);
+
+  const [step2Verified, setStep2Verified] = useState<boolean>(false);
+  const [step2Loading, setStep2Loading] = useState<boolean>(false);
+  const [step2Error, setStep2Error] = useState<string | null>(null);
+  const [step2SuccessMsg, setStep2SuccessMsg] = useState<string | null>(null);
+
+  const [step3Verified, setStep3Verified] = useState<boolean>(false);
+  const [step3Loading, setStep3Loading] = useState<boolean>(false);
+  const [step3Error, setStep3Error] = useState<string | null>(null);
+  const [step3SuccessMsg, setStep3SuccessMsg] = useState<string | null>(null);
+
+  const [step4Verified, setStep4Verified] = useState<boolean>(false);
+  const [step4Loading, setStep4Loading] = useState<boolean>(false);
+  const [step4Error, setStep4Error] = useState<string | null>(null);
+  const [step4SuccessMsg, setStep4SuccessMsg] = useState<string | null>(null);
 
   // Form states
   const [trackerKind, setTrackerKind] = useState<string>("github");
@@ -201,7 +228,209 @@ orchestrator to resolve GitHub Issue **#{{ issue.identifier }}**.
 4. Update the persistent tracker Workpad comment to document completed items and
   test results.
 5. Once all verification checks pass and the issue is resolved, conclude the
-  turn.`);
+  turn.`); // Background effect to auto-detect Git & Agent commands on mount
+  useEffect(() => {
+    if (!isSetupOpen) return;
+
+    const detectAll = async () => {
+      // 1. Auto-detect Git Info
+      try {
+        const gitInfo: any = await invoke("detect_local_git_info");
+        setDetectedGitInfo(gitInfo);
+        if (gitInfo) {
+          if (!projectDir && gitInfo.project_dir) {
+            setProjectDir(gitInfo.project_dir);
+          }
+          if (gitInfo.project_slug) {
+            setTrackerProjectSlug((prev) => prev || gitInfo.project_slug || "");
+          }
+          if (gitInfo.detected_tracker) {
+            setTrackerKind((prev) => prev || gitInfo.detected_tracker || "github");
+          }
+        }
+      } catch (e) {
+        console.warn("Failed to auto-detect Git/project info:", e);
+      }
+
+      // 2. Auto-detect installed agents in PATH
+      const agentsList = [
+        { key: "codex", cmd: "codex app-server" },
+        { key: "kiro", cmd: "kiro-cli acp" },
+        { key: "antigravity", cmd: "agy --print -" },
+      ];
+
+      let firstAvailableSelection: "codex" | "kiro" | "antigravity" | null = null;
+
+      for (const agent of agentsList) {
+        try {
+          await invoke("verify_agent_command", { command: agent.cmd });
+          if (!firstAvailableSelection) {
+            firstAvailableSelection = agent.key as any;
+          }
+        } catch {
+          // not in path
+        }
+      }
+
+      // If current agentCommand is empty or custom, and we found an available agent, set it
+      if (!agentCommand && firstAvailableSelection) {
+        if (firstAvailableSelection === "codex") {
+          setAgentSelection("codex");
+          setAgentCommand("codex app-server");
+          setAgentProtocol("jsonrpc");
+        } else if (firstAvailableSelection === "kiro") {
+          setAgentSelection("kiro");
+          setAgentCommand("kiro-cli acp");
+          setAgentProtocol("jsonrpc");
+        } else if (firstAvailableSelection === "antigravity") {
+          setAgentSelection("antigravity");
+          setAgentCommand("agy --print -");
+          setAgentProtocol("oneshot");
+        }
+      }
+    };
+
+    detectAll();
+  }, [isSetupOpen]);
+
+  // Step 1: Workspace setup verification
+  useEffect(() => {
+    if (!isSetupOpen) return;
+    if (!projectDir && !workspaceRoot) return;
+
+    setStep1Loading(true);
+    setStep1Error(null);
+    setStep1SuccessMsg(null);
+
+    const timer = setTimeout(async () => {
+      try {
+        await invoke("verify_workspace_setup", { projectDir, workspaceRoot });
+        setStep1Verified(true);
+        setStep1SuccessMsg("Workspace setup verified successfully!");
+      } catch (err: any) {
+        setStep1Verified(false);
+        setStep1Error(String(err));
+      } finally {
+        setStep1Loading(false);
+      }
+    }, 500);
+
+    return () => clearTimeout(timer);
+  }, [projectDir, workspaceRoot, isSetupOpen]);
+
+  // Step 2: Tracker connection verification
+  useEffect(() => {
+    if (!isSetupOpen) return;
+    if (!projectDir) {
+      setStep2Verified(false);
+      setStep2Error("Project Directory is required to test connection.");
+      return;
+    }
+
+    setStep2Loading(true);
+    setStep2Error(null);
+    setStep2SuccessMsg(null);
+
+    const activeStatesList = trackerActiveStates
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
+    const terminalStatesList = trackerTerminalStates
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
+
+    const trackerPayload = {
+      kind: trackerKind,
+      endpoint: trackerEndpoint,
+      api_key: trackerApiKey ? trackerApiKey : null,
+      project_slug: trackerProjectSlug,
+      assignee: trackerAssignee ? trackerAssignee : null,
+      active_states: activeStatesList,
+      terminal_states: terminalStatesList,
+    };
+
+    const timer = setTimeout(async () => {
+      try {
+        const issueCount = await invoke<number>("test_tracker_connection", {
+          tracker: trackerPayload,
+          projectDir,
+        });
+        setStep2Verified(true);
+        setStep2SuccessMsg(`Connection successful! Found ${issueCount} candidate issues.`);
+      } catch (err: any) {
+        setStep2Verified(false);
+        setStep2Error(String(err));
+      } finally {
+        setStep2Loading(false);
+      }
+    }, 600);
+
+    return () => clearTimeout(timer);
+  }, [
+    trackerKind,
+    trackerEndpoint,
+    trackerApiKey,
+    trackerProjectSlug,
+    trackerAssignee,
+    trackerActiveStates,
+    trackerTerminalStates,
+    projectDir,
+    isSetupOpen,
+  ]);
+
+  // Step 3: Coding agent command verification
+  useEffect(() => {
+    if (!isSetupOpen) return;
+    if (!agentCommand) {
+      setStep3Verified(false);
+      setStep3Error("Agent command cannot be empty.");
+      return;
+    }
+
+    setStep3Loading(true);
+    setStep3Error(null);
+    setStep3SuccessMsg(null);
+
+    const timer = setTimeout(async () => {
+      try {
+        await invoke("verify_agent_command", { command: agentCommand });
+        setStep3Verified(true);
+        setStep3SuccessMsg("Coding agent verified. Executable is present in system PATH.");
+      } catch (err: any) {
+        setStep3Verified(false);
+        setStep3Error(String(err));
+      } finally {
+        setStep3Loading(false);
+      }
+    }, 500);
+
+    return () => clearTimeout(timer);
+  }, [agentCommand, isSetupOpen]);
+
+  // Step 4: Prompt template jinja validation
+  useEffect(() => {
+    if (!isSetupOpen) return;
+
+    setStep4Loading(true);
+    setStep4Error(null);
+    setStep4SuccessMsg(null);
+
+    const timer = setTimeout(async () => {
+      try {
+        await invoke("verify_prompt_template", { template: promptTemplate });
+        setStep4Verified(true);
+        setStep4SuccessMsg("Prompt template MiniJinja syntax is valid.");
+      } catch (err: any) {
+        setStep4Verified(false);
+        setStep4Error(String(err));
+      } finally {
+        setStep4Loading(false);
+      }
+    }, 500);
+
+    return () => clearTimeout(timer);
+  }, [promptTemplate, isSetupOpen]);
 
   // Auto-populate defaults when tracker kind changes
   const handleTrackerKindChange = (kind: string) => {
@@ -246,6 +475,42 @@ orchestrator to resolve GitHub Issue **#{{ issue.identifier }}**.
     } else if (selection === "antigravity") {
       setAgentCommand("agy --print -");
       setAgentProtocol("oneshot");
+    }
+  };
+
+  // Auto-populate hooks when lifecycle preset changes
+  const applyPreset = (preset: string) => {
+    setPresetSelection(preset);
+    if (preset === "local_git") {
+      setHooksAfterCreate(
+        "git clone {{ project_dir }} . && git checkout -b {{ issue.branch_name }} || (git clone {{ project_dir }} . && git checkout {{ issue.branch_name }})",
+      );
+      setHooksBeforeRun("pnpm install");
+      setHooksAfterRun(
+        "git add . && git commit -m 'chore(skrvm): turn progression progress' --allow-empty && git push -u origin HEAD:{{ issue.branch_name }}",
+      );
+    } else if (preset === "github_remote") {
+      setHooksAfterCreate(
+        "git clone git@github.com:{{ project_slug }}.git . && git checkout -b {{ issue.branch_name }}",
+      );
+      setHooksBeforeRun("pnpm install");
+      setHooksAfterRun(
+        "git add . && git commit -m 'chore(skrvm): turn progression progress' --allow-empty && git push -u origin HEAD:{{ issue.branch_name }} && gh pr create --title '{{ issue.title }}' --body 'Automated changes by Skrvm.' --head '{{ issue.branch_name }}' || true",
+      );
+    } else if (preset === "gitlab_remote") {
+      setHooksAfterCreate(
+        "git clone git@gitlab.com:{{ project_slug }}.git . && git checkout -b {{ issue.branch_name }}",
+      );
+      setHooksBeforeRun("pnpm install");
+      setHooksAfterRun(
+        "git add . && git commit -m 'chore(skrvm): turn progression progress' --allow-empty && git push -u origin HEAD:{{ issue.branch_name }} && glab mr create --title '{{ issue.title }}' --description 'Automated changes by Skrvm.' --source-branch '{{ issue.branch_name }}' || true",
+      );
+    } else if (preset === "local_copy") {
+      setHooksAfterCreate(
+        "rsync -av --exclude='.git' --exclude='node_modules' {{ project_dir }}/ .",
+      );
+      setHooksBeforeRun("pnpm install");
+      setHooksAfterRun("");
     }
   };
 
@@ -464,6 +729,7 @@ orchestrator to resolve GitHub Issue **#{{ issue.identifier }}**.
 
   // Open setup and fetch current settings if they exist
   const openSetupWizard = async () => {
+    let loadedProjectDir = "";
     try {
       const data: any = await invoke("get_current_workflow");
       if (data && data.settings) {
@@ -514,15 +780,71 @@ orchestrator to resolve GitHub Issue **#{{ issue.identifier }}**.
           setHooksAfterRun(s.hooks.after_run || "");
           setHooksBeforeRemove(s.hooks.before_remove || "");
           setHooksTimeout(s.hooks.timeout_ms || 120000);
+
+          const ac = s.hooks.after_create || "";
+          if (ac.includes("rsync")) {
+            setPresetSelection("local_copy");
+          } else if (ac.includes("gitlab.com")) {
+            setPresetSelection("gitlab_remote");
+          } else if (ac.includes("github.com")) {
+            setPresetSelection("github_remote");
+          } else if (ac.includes("project_dir") || ac.includes("projectDir")) {
+            setPresetSelection("local_git");
+          } else {
+            setPresetSelection("custom");
+          }
         }
         if (data.prompt_template) {
           setPromptTemplate(data.prompt_template);
+        }
+        if (data.project_dir) {
+          loadedProjectDir = data.project_dir;
+          setProjectDir(data.project_dir);
         }
       }
     } catch (e) {
       console.error("Failed to load current workflow settings:", e);
     }
-    setSetupStep(1);
+
+    try {
+      const gitInfo: any = await invoke("detect_local_git_info");
+      setDetectedGitInfo(gitInfo);
+      if (gitInfo) {
+        if (!loadedProjectDir && gitInfo.project_dir) {
+          setProjectDir(gitInfo.project_dir);
+        }
+        if (gitInfo.project_slug) {
+          setTrackerProjectSlug((prev) => prev || gitInfo.project_slug || "");
+        }
+        if (gitInfo.detected_tracker) {
+          setTrackerKind((prev) => prev || gitInfo.detected_tracker || "github");
+        }
+      }
+    } catch (e) {
+      console.warn("Failed to auto-detect Git/project info:", e);
+    }
+
+    setStep1Verified(false);
+    setStep1Loading(false);
+    setStep1Error(null);
+    setStep1SuccessMsg(null);
+
+    setStep2Verified(false);
+    setStep2Loading(false);
+    setStep2Error(null);
+    setStep2SuccessMsg(null);
+
+    setStep3Verified(false);
+    setStep3Loading(false);
+    setStep3Error(null);
+    setStep3SuccessMsg(null);
+
+    setStep4Verified(false);
+    setStep4Loading(false);
+    setStep4Error(null);
+    setStep4SuccessMsg(null);
+
+    setShowAdvancedSettings(false);
     setIsSetupOpen(true);
   };
 
@@ -590,6 +912,7 @@ orchestrator to resolve GitHub Issue **#{{ issue.identifier }}**.
           },
         },
         prompt_template: promptTemplate,
+        project_dir: projectDir ? projectDir : null,
       };
 
       await invoke("save_workflow", { payload });
@@ -1298,7 +1621,7 @@ orchestrator to resolve GitHub Issue **#{{ issue.identifier }}**.
               {reloadMsg}
             </span>
           )}
-          <button className="btn-premium" style={{ marginRight: "8px" }} onClick={openSetupWizard}>
+          <button className="btn-premium" onClick={openSetupWizard}>
             Setup Wizard
           </button>
           <button className="btn-premium" onClick={handleReload} disabled={isReloading}>
@@ -2475,191 +2798,330 @@ orchestrator to resolve GitHub Issue **#{{ issue.identifier }}**.
               </button>
             </div>
 
-            <div className="setup-steps-bar">
-              <div
-                className={`setup-step-indicator ${setupStep === 1 ? "active" : ""}`}
-                onClick={() => setSetupStep(1)}
-              >
-                1. Issue Tracker
-              </div>
-              <div
-                className={`setup-step-indicator ${setupStep === 2 ? "active" : ""}`}
-                onClick={() => setSetupStep(2)}
-              >
-                2. Coding Agent
-              </div>
-              <div
-                className={`setup-step-indicator ${setupStep === 3 ? "active" : ""}`}
-                onClick={() => setSetupStep(3)}
-              >
-                3. Advanced {"\u0026"} Hooks
-              </div>
-              <div
-                className={`setup-step-indicator ${setupStep === 4 ? "active" : ""}`}
-                onClick={() => setSetupStep(4)}
-              >
-                4. Instructions
-              </div>
-            </div>
-
             <div className="setup-modal-body">
-              {setupStep === 1 && (
-                <div style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
-                  <div className="setup-tip">
-                    Configure your issue tracker credentials. If you use environment variables (e.g.{" "}
-                    <code>$GITHUB_TOKEN</code>), Skrvm will dynamically resolve them at runtime.
+              {/* Summary Card for Auto-Detected Properties */}
+              <div className="setup-summary-card">
+                <div className="summary-header">Auto-Detected Configurations</div>
+                <div className="summary-grid">
+                  <div className="summary-item">
+                    <span className="summary-label">Project Path:</span>
+                    <span className="summary-value monospace">{projectDir || "Not detected"}</span>
                   </div>
-                  <div className="setup-form-group">
-                    <label className="setup-label">Tracker Provider</label>
-                    <select
-                      className="setup-select"
-                      value={trackerKind}
-                      onChange={(e) => handleTrackerKindChange(e.target.value)}
+                  <div className="summary-item">
+                    <span className="summary-label">Git Remote:</span>
+                    <span className="summary-value monospace">
+                      {detectedGitInfo?.remote_url || "None"}
+                    </span>
+                  </div>
+                  <div className="summary-item">
+                    <span className="summary-label">Project Slug:</span>
+                    <span className="summary-value monospace">{trackerProjectSlug || "None"}</span>
+                  </div>
+                  <div className="summary-item">
+                    <span className="summary-label">Active Tracker:</span>
+                    <span className="summary-value text-capitalize">{trackerKind}</span>
+                  </div>
+                  <div className="summary-item">
+                    <span className="summary-label">Agent Command:</span>
+                    <span className="summary-value monospace">{agentCommand || "None"}</span>
+                  </div>
+                  <div className="summary-item">
+                    <span className="summary-label">Env API Key:</span>
+                    <span
+                      className={`summary-value ${trackerApiKey ? "success-text" : "warning-text"}`}
                     >
-                      <option value="github">GitHub Issues</option>
-                      <option value="gitlab">GitLab Issues</option>
-                      <option value="jira">Jira Software</option>
-                      <option value="linear">Linear</option>
-                      <option value="memory">In-Memory (Local Only)</option>
-                    </select>
-                  </div>
-
-                  <div className="setup-form-group">
-                    <label className="setup-label">Endpoint URL</label>
-                    <input
-                      type="text"
-                      className="setup-input"
-                      value={trackerEndpoint}
-                      onChange={(e) => setTrackerEndpoint(e.target.value)}
-                      placeholder="e.g. https://api.github.com"
-                    />
-                  </div>
-
-                  <div className="setup-form-group">
-                    <label className="setup-label">API Key / Token</label>
-                    <input
-                      type="password"
-                      className="setup-input"
-                      value={trackerApiKey}
-                      onChange={(e) => setTrackerApiKey(e.target.value)}
-                      placeholder="e.g. $GITHUB_TOKEN"
-                    />
-                  </div>
-
-                  <div className="setup-form-group">
-                    <label className="setup-label">Project Identifier / Slug</label>
-                    <input
-                      type="text"
-                      className="setup-input"
-                      value={trackerProjectSlug}
-                      onChange={(e) => setTrackerProjectSlug(e.target.value)}
-                      placeholder="e.g. drew-simmons/skrvm"
-                    />
-                  </div>
-
-                  <div className="setup-form-group">
-                    <label className="setup-label">Default Assignee ID</label>
-                    <input
-                      type="text"
-                      className="setup-input"
-                      value={trackerAssignee}
-                      onChange={(e) => setTrackerAssignee(e.target.value)}
-                      placeholder="e.g. $GITHUB_ASSIGNEE"
-                    />
-                  </div>
-
-                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.8rem" }}>
-                    <div className="setup-form-group">
-                      <label className="setup-label">Active States (Comma Sep)</label>
-                      <input
-                        type="text"
-                        className="setup-input"
-                        value={trackerActiveStates}
-                        onChange={(e) => setTrackerActiveStates(e.target.value)}
-                        placeholder="Todo, In Progress"
-                      />
-                    </div>
-                    <div className="setup-form-group">
-                      <label className="setup-label">Terminal States (Comma Sep)</label>
-                      <input
-                        type="text"
-                        className="setup-input"
-                        value={trackerTerminalStates}
-                        onChange={(e) => setTrackerTerminalStates(e.target.value)}
-                        placeholder="Done, Closed"
-                      />
-                    </div>
+                      {trackerApiKey ? "Configured" : "Not Found"}
+                    </span>
                   </div>
                 </div>
-              )}
+              </div>
 
-              {setupStep === 2 && (
-                <div style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
-                  <div className="setup-tip">
-                    Select which coding assistant you want to orchestrate. Skrvm will configure the
-                    standard execution protocol and commands automatically.
-                  </div>
+              {/* Dynamic Inputs for Missing/Required Fields */}
+              <div className="setup-missing-section">
+                <div className="section-title">Required Credentials & Paths</div>
 
-                  <label className="setup-label">Select Assistant</label>
-                  <div className="agent-cards-grid">
-                    <div
-                      className={`agent-setup-card ${agentSelection === "codex" ? "selected" : ""}`}
-                      onClick={() => handleAgentSelectionChange("codex")}
-                    >
-                      <span className="agent-card-title">Codex</span>
-                      <span className="agent-card-desc">
-                        Conversational JSON-RPC client via "codex app-server"
-                      </span>
-                    </div>
-                    <div
-                      className={`agent-setup-card ${agentSelection === "kiro" ? "selected" : ""}`}
-                      onClick={() => handleAgentSelectionChange("kiro")}
-                    >
-                      <span className="agent-card-title">Kiro CLI</span>
-                      <span className="agent-card-desc">
-                        Interactive ACP server via "kiro-cli acp"
-                      </span>
-                    </div>
-                    <div
-                      className={`agent-setup-card ${agentSelection === "antigravity" ? "selected" : ""}`}
-                      onClick={() => handleAgentSelectionChange("antigravity")}
-                    >
-                      <span className="agent-card-title">Antigravity</span>
-                      <span className="agent-card-desc">
-                        Fast, single-shot execution via "agy --print -"
-                      </span>
-                    </div>
-                  </div>
+                <div className="setup-form-group">
+                  <label className="setup-label">Project Directory</label>
+                  <input
+                    type="text"
+                    className="setup-input"
+                    value={projectDir}
+                    onChange={(e) => setProjectDir(e.target.value)}
+                    placeholder="e.g. /Users/username/dev/project"
+                  />
+                </div>
 
-                  <div
-                    style={{
-                      marginTop: "0.5rem",
-                      borderTop: "1px solid rgba(255,255,255,0.05)",
-                      paddingTop: "0.8rem",
-                    }}
-                  >
+                <div className="setup-form-group">
+                  <label className="setup-label">Sandbox Root Directory</label>
+                  <input
+                    type="text"
+                    className="setup-input"
+                    value={workspaceRoot}
+                    onChange={(e) => setWorkspaceRoot(e.target.value)}
+                    placeholder="e.g. ~/dev/scratch/skrvm/workspaces"
+                  />
+                </div>
+
+                {trackerKind !== "memory" && (
+                  <>
                     <div className="setup-form-group">
-                      <label className="setup-label">Custom Command Override</label>
+                      <label className="setup-label">Tracker Endpoint URL</label>
                       <input
                         type="text"
                         className="setup-input"
-                        value={agentCommand}
-                        onChange={(e) => {
-                          setAgentCommand(e.target.value);
-                          setAgentSelection("custom");
-                        }}
-                        placeholder="e.g. codex app-server"
+                        value={trackerEndpoint}
+                        onChange={(e) => setTrackerEndpoint(e.target.value)}
+                        placeholder="e.g. https://api.github.com"
                       />
                     </div>
 
-                    <div
-                      style={{
-                        display: "grid",
-                        gridTemplateColumns: "1fr 1fr",
-                        gap: "0.8rem",
-                        marginTop: "0.6rem",
-                      }}
-                    >
+                    <div className="setup-form-group">
+                      <label className="setup-label">
+                        API Key / Token (or Environment Var Reference)
+                      </label>
+                      <input
+                        type="text"
+                        className="setup-input"
+                        value={trackerApiKey}
+                        onChange={(e) => setTrackerApiKey(e.target.value)}
+                        placeholder="e.g. $GITHUB_TOKEN or raw token key"
+                      />
+                      {!trackerApiKey && (
+                        <div className="setup-tip-warning">
+                          ⚠️ Tracker API key is missing. Recommending using an environment variable
+                          like <code>$GITHUB_TOKEN</code>.
+                        </div>
+                      )}
+                    </div>
+
+                    <div className="setup-form-group">
+                      <label className="setup-label">Project Identifier / Slug</label>
+                      <input
+                        type="text"
+                        className="setup-input"
+                        value={trackerProjectSlug}
+                        onChange={(e) => setTrackerProjectSlug(e.target.value)}
+                        placeholder="e.g. drew-simmons/skrvm"
+                      />
+                    </div>
+                  </>
+                )}
+              </div>
+
+              {/* Status Grid displaying verification steps */}
+              <div className="verification-section">
+                <div className="section-title">Automated System Audits</div>
+                <div className="verification-grid">
+                  {/* Step 1: Workspace */}
+                  <div
+                    className={`verification-card ${step1Verified ? "success" : step1Error ? "failed" : ""}`}
+                  >
+                    <div className="verification-card-header">
+                      <span className="verify-title">1. Workspace & Sandbox</span>
+                      <span className="verify-status">
+                        {step1Loading ? "⌛" : step1Verified ? "✓" : "✗"}
+                      </span>
+                    </div>
+                    {step1Error && <div className="verify-error-msg">{step1Error}</div>}
+                    {step1SuccessMsg && !step1Error && (
+                      <div className="verify-success-msg">{step1SuccessMsg}</div>
+                    )}
+                  </div>
+
+                  {/* Step 2: Tracker */}
+                  <div
+                    className={`verification-card ${step2Verified ? "success" : step2Error ? "failed" : ""}`}
+                  >
+                    <div className="verification-card-header">
+                      <span className="verify-title">2. Tracker Connection</span>
+                      <span className="verify-status">
+                        {step2Loading ? "⌛" : step2Verified ? "✓" : "✗"}
+                      </span>
+                    </div>
+                    {step2Error && <div className="verify-error-msg">{step2Error}</div>}
+                    {step2SuccessMsg && !step2Error && (
+                      <div className="verify-success-msg">{step2SuccessMsg}</div>
+                    )}
+                  </div>
+
+                  {/* Step 3: Agent Executable */}
+                  <div
+                    className={`verification-card ${step3Verified ? "success" : step3Error ? "failed" : ""}`}
+                  >
+                    <div className="verification-card-header">
+                      <span className="verify-title">3. Coding Agent PATH</span>
+                      <span className="verify-status">
+                        {step3Loading ? "⌛" : step3Verified ? "✓" : "✗"}
+                      </span>
+                    </div>
+                    {step3Error && <div className="verify-error-msg">{step3Error}</div>}
+                    {step3SuccessMsg && !step3Error && (
+                      <div className="verify-success-msg">{step3SuccessMsg}</div>
+                    )}
+                  </div>
+
+                  {/* Step 4: Template Syntax */}
+                  <div
+                    className={`verification-card ${step4Verified ? "success" : step4Error ? "failed" : ""}`}
+                  >
+                    <div className="verification-card-header">
+                      <span className="verify-title">4. Template Jinja Syntax</span>
+                      <span className="verify-status">
+                        {step4Loading ? "⌛" : step4Verified ? "✓" : "✗"}
+                      </span>
+                    </div>
+                    {step4Error && <div className="verify-error-msg">{step4Error}</div>}
+                    {step4SuccessMsg && !step4Error && (
+                      <div className="verify-success-msg">{step4SuccessMsg}</div>
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              {/* Advanced Settings Collapsible section */}
+              <div className="advanced-settings-container">
+                <button
+                  type="button"
+                  className="btn-advanced-toggle"
+                  onClick={() => setShowAdvancedSettings(!showAdvancedSettings)}
+                >
+                  {showAdvancedSettings ? "Hide Advanced Settings ▲" : "Show Advanced Settings ▼"}
+                </button>
+
+                {showAdvancedSettings && (
+                  <div className="advanced-settings-panel">
+                    <div className="advanced-settings-row">
+                      <div className="setup-form-group">
+                        <label className="setup-label">Tracker Provider</label>
+                        <select
+                          className="setup-select"
+                          value={trackerKind}
+                          onChange={(e) => handleTrackerKindChange(e.target.value)}
+                        >
+                          <option value="github">GitHub Issues</option>
+                          <option value="gitlab">GitLab Issues</option>
+                          <option value="jira">Jira Software</option>
+                          <option value="linear">Linear</option>
+                          <option value="memory">In-Memory (Local Only)</option>
+                        </select>
+                      </div>
+
+                      <div className="setup-form-group">
+                        <label className="setup-label">Default Assignee ID</label>
+                        <input
+                          type="text"
+                          className="setup-input"
+                          value={trackerAssignee}
+                          onChange={(e) => setTrackerAssignee(e.target.value)}
+                          placeholder="e.g. $GITHUB_ASSIGNEE"
+                        />
+                      </div>
+                    </div>
+
+                    <div className="advanced-settings-row three-col">
+                      <div className="setup-form-group">
+                        <label className="setup-label">Polling Cycle (ms)</label>
+                        <input
+                          type="number"
+                          className="setup-input"
+                          value={pollingInterval}
+                          onChange={(e) => setPollingInterval(Number(e.target.value))}
+                        />
+                      </div>
+                      <div className="setup-form-group">
+                        <label className="setup-label">Max Workers</label>
+                        <input
+                          type="number"
+                          className="setup-input"
+                          value={agentMaxConcurrent}
+                          onChange={(e) => setAgentMaxConcurrent(Number(e.target.value))}
+                        />
+                      </div>
+                      <div className="setup-form-group">
+                        <label className="setup-label">Max Turns</label>
+                        <input
+                          type="number"
+                          className="setup-input"
+                          value={agentMaxTurns}
+                          onChange={(e) => setAgentMaxTurns(Number(e.target.value))}
+                        />
+                      </div>
+                    </div>
+
+                    <div className="advanced-settings-row">
+                      <div className="setup-form-group">
+                        <label className="setup-label">Active States (Comma Sep)</label>
+                        <input
+                          type="text"
+                          className="setup-input"
+                          value={trackerActiveStates}
+                          onChange={(e) => setTrackerActiveStates(e.target.value)}
+                          placeholder="Todo, In Progress"
+                        />
+                      </div>
+                      <div className="setup-form-group">
+                        <label className="setup-label">Terminal States (Comma Sep)</label>
+                        <input
+                          type="text"
+                          className="setup-input"
+                          value={trackerTerminalStates}
+                          onChange={(e) => setTrackerTerminalStates(e.target.value)}
+                          placeholder="Done, Closed"
+                        />
+                      </div>
+                    </div>
+
+                    <div className="section-subtitle" style={{ marginTop: "1rem" }}>
+                      Coding Agent Executable & Sandbox
+                    </div>
+
+                    <div className="setup-form-group">
+                      <label className="setup-label">Select Agent</label>
+                      <div className="agent-cards-grid">
+                        <div
+                          className={`agent-setup-card ${agentSelection === "codex" ? "selected" : ""}`}
+                          onClick={() => handleAgentSelectionChange("codex")}
+                        >
+                          <span className="agent-card-title">Codex</span>
+                          <span className="agent-card-desc">
+                            Conversational JSON-RPC client via "codex app-server"
+                          </span>
+                        </div>
+                        <div
+                          className={`agent-setup-card ${agentSelection === "kiro" ? "selected" : ""}`}
+                          onClick={() => handleAgentSelectionChange("kiro")}
+                        >
+                          <span className="agent-card-title">Kiro CLI</span>
+                          <span className="agent-card-desc">
+                            Interactive ACP server via "kiro-cli acp"
+                          </span>
+                        </div>
+                        <div
+                          className={`agent-setup-card ${agentSelection === "antigravity" ? "selected" : ""}`}
+                          onClick={() => handleAgentSelectionChange("antigravity")}
+                        >
+                          <span className="agent-card-title">Antigravity</span>
+                          <span className="agent-card-desc">
+                            Fast, single-shot execution via "agy --print -"
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="advanced-settings-row">
+                      <div className="setup-form-group">
+                        <label className="setup-label">Custom Command Override</label>
+                        <input
+                          type="text"
+                          className="setup-input"
+                          value={agentCommand}
+                          onChange={(e) => {
+                            setAgentCommand(e.target.value);
+                            setAgentSelection("custom");
+                          }}
+                          placeholder="e.g. codex app-server"
+                        />
+                      </div>
                       <div className="setup-form-group">
                         <label className="setup-label">Protocol</label>
                         <select
@@ -2674,161 +3136,152 @@ orchestrator to resolve GitHub Issue **#{{ issue.identifier }}**.
                           <option value="oneshot">One-Shot (Single execution)</option>
                         </select>
                       </div>
-                      <div className="setup-form-group">
-                        <label className="setup-label">Thread Sandbox</label>
-                        <input
-                          type="text"
-                          className="setup-input"
-                          value={agentThreadSandbox}
-                          onChange={(e) => setAgentThreadSandbox(e.target.value)}
-                          placeholder="workspace-write"
-                        />
+                    </div>
+
+                    <div className="section-subtitle" style={{ marginTop: "1rem" }}>
+                      Workspace Lifecycle Preset & Hooks
+                    </div>
+
+                    <div className="preset-cards-grid">
+                      <div
+                        className={`agent-setup-card ${presetSelection === "local_git" ? "selected" : ""}`}
+                        onClick={() => applyPreset("local_git")}
+                      >
+                        <span className="agent-card-title">Local Branch-Aware Clone</span>
+                        <span className="agent-card-desc">
+                          Clones from local project path. Resolves changes off current branch.
+                        </span>
+                      </div>
+                      <div
+                        className={`agent-setup-card ${presetSelection === "github_remote" ? "selected" : ""}`}
+                        onClick={() => applyPreset("github_remote")}
+                      >
+                        <span className="agent-card-title">Remote GitHub Clone</span>
+                        <span className="agent-card-desc">
+                          Clones from GitHub. Creates branch from default origin.
+                        </span>
+                      </div>
+                      <div
+                        className={`agent-setup-card ${presetSelection === "gitlab_remote" ? "selected" : ""}`}
+                        onClick={() => applyPreset("gitlab_remote")}
+                      >
+                        <span className="agent-card-title">Remote GitLab Clone</span>
+                        <span className="agent-card-desc">
+                          Clones from GitLab. Creates branch from default origin.
+                        </span>
+                      </div>
+                      <div
+                        className={`agent-setup-card ${presetSelection === "local_copy" ? "selected" : ""}`}
+                        onClick={() => applyPreset("local_copy")}
+                      >
+                        <span className="agent-card-title">Local Copy (No Git)</span>
+                        <span className="agent-card-desc">
+                          Direct copy of local directory using rsync. No git branch tracking.
+                        </span>
                       </div>
                     </div>
-                  </div>
-                </div>
-              )}
 
-              {setupStep === 3 && (
-                <div style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
-                  <div className="setup-tip">
-                    Configure system execution limits and VCS checkout/commit hooks. These hooks
-                    manage directory sandboxes dynamically for each ticket turn.
-                  </div>
-
-                  <div
-                    style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: "0.6rem" }}
-                  >
-                    <div className="setup-form-group">
-                      <label className="setup-label">Polling Cycle (ms)</label>
-                      <input
-                        type="number"
-                        className="setup-input"
-                        value={pollingInterval}
-                        onChange={(e) => setPollingInterval(Number(e.target.value))}
-                      />
-                    </div>
-                    <div className="setup-form-group">
-                      <label className="setup-label">Max Workers</label>
-                      <input
-                        type="number"
-                        className="setup-input"
-                        value={agentMaxConcurrent}
-                        onChange={(e) => setAgentMaxConcurrent(Number(e.target.value))}
-                      />
-                    </div>
-                    <div className="setup-form-group">
-                      <label className="setup-label">Max Turns</label>
-                      <input
-                        type="number"
-                        className="setup-input"
-                        value={agentMaxTurns}
-                        onChange={(e) => setAgentMaxTurns(Number(e.target.value))}
-                      />
-                    </div>
-                  </div>
-
-                  <div className="setup-form-group">
-                    <label className="setup-label">Sandbox Root Directory</label>
-                    <input
-                      type="text"
-                      className="setup-input"
-                      value={workspaceRoot}
-                      onChange={(e) => setWorkspaceRoot(e.target.value)}
-                      placeholder="e.g. ~/dev/scratch/skrvm/workspaces"
-                    />
-                  </div>
-
-                  <div className="setup-form-group">
-                    <label className="setup-label">Post-Creation Hook (after_create)</label>
-                    <input
-                      type="text"
-                      className="setup-input"
-                      value={hooksAfterCreate}
-                      onChange={(e) => setHooksAfterCreate(e.target.value)}
-                      placeholder="e.g. git clone ... && git checkout -b ..."
-                    />
-                  </div>
-
-                  <div className="setup-form-group">
-                    <label className="setup-label">Pre-Execution Hook (before_run)</label>
-                    <input
-                      type="text"
-                      className="setup-input"
-                      value={hooksBeforeRun}
-                      onChange={(e) => setHooksBeforeRun(e.target.value)}
-                      placeholder="e.g. pnpm install"
-                    />
-                  </div>
-
-                  <div className="setup-form-group">
-                    <label className="setup-label">Post-Execution Hook (after_run)</label>
-                    <input
-                      type="text"
-                      className="setup-input"
-                      value={hooksAfterRun}
-                      onChange={(e) => setHooksAfterRun(e.target.value)}
-                      placeholder="e.g. git add . && git commit ... && git push"
-                    />
-                  </div>
-                </div>
-              )}
-
-              {setupStep === 4 && (
-                <div
-                  style={{ display: "flex", flexDirection: "column", gap: "1rem", height: "100%" }}
-                >
-                  <div className="setup-tip">
-                    Compose the execution blueprint. This prompt is delivered to the coding agent
-                    during each execution cycle along with issue context details.
-                  </div>
-
-                  <div
-                    className="setup-form-group"
-                    style={{ flex: 1, display: "flex", flexDirection: "column" }}
-                  >
-                    <label className="setup-label">WORKFLOW.md Prompt Template</label>
-                    <textarea
-                      className="setup-textarea"
+                    <button
+                      type="button"
+                      className="btn-setup-secondary"
                       style={{
-                        flex: 1,
-                        minHeight: "260px",
-                        fontFamily: "monospace",
                         fontSize: "0.75rem",
+                        padding: "0.3rem 0.6rem",
+                        marginTop: "0.8rem",
+                        display: "inline-flex",
+                        alignItems: "center",
+                        gap: "4px",
                       }}
-                      value={promptTemplate}
-                      onChange={(e) => setPromptTemplate(e.target.value)}
-                      placeholder="You are an elite coding assistant..."
-                    />
+                      onClick={() => setShowCustomHooks(!showCustomHooks)}
+                    >
+                      {showCustomHooks ? "Hide Custom Hook Scripts ▲" : "Customize Hook Scripts ▼"}
+                    </button>
+
+                    {showCustomHooks && (
+                      <div
+                        className="custom-hooks-fields"
+                        style={{
+                          display: "flex",
+                          flexDirection: "column",
+                          gap: "0.8rem",
+                          marginTop: "0.6rem",
+                        }}
+                      >
+                        <div className="setup-form-group">
+                          <label className="setup-label">Post-Creation Hook (after_create)</label>
+                          <input
+                            type="text"
+                            className="setup-input"
+                            value={hooksAfterCreate}
+                            onChange={(e) => {
+                              setHooksAfterCreate(e.target.value);
+                              setPresetSelection("custom");
+                            }}
+                          />
+                        </div>
+                        <div className="setup-form-group">
+                          <label className="setup-label">Pre-Execution Hook (before_run)</label>
+                          <input
+                            type="text"
+                            className="setup-input"
+                            value={hooksBeforeRun}
+                            onChange={(e) => {
+                              setHooksBeforeRun(e.target.value);
+                              setPresetSelection("custom");
+                            }}
+                          />
+                        </div>
+                        <div className="setup-form-group">
+                          <label className="setup-label">Post-Execution Hook (after_run)</label>
+                          <input
+                            type="text"
+                            className="setup-input"
+                            value={hooksAfterRun}
+                            onChange={(e) => {
+                              setHooksAfterRun(e.target.value);
+                              setPresetSelection("custom");
+                            }}
+                          />
+                        </div>
+                      </div>
+                    )}
+
+                    <div
+                      className="setup-form-group"
+                      style={{ display: "flex", flexDirection: "column", marginTop: "1rem" }}
+                    >
+                      <label className="setup-label">WORKFLOW.md Prompt Template</label>
+                      <textarea
+                        className="setup-textarea"
+                        style={{ minHeight: "150px", fontFamily: "monospace", fontSize: "0.75rem" }}
+                        value={promptTemplate}
+                        onChange={(e) => setPromptTemplate(e.target.value)}
+                      />
+                    </div>
                   </div>
-                </div>
-              )}
+                )}
+              </div>
             </div>
 
             <div className="setup-modal-footer">
-              <button
-                className="btn-setup-secondary"
-                onClick={() => {
-                  if (setupStep > 1) setSetupStep(setupStep - 1);
-                  else setIsSetupOpen(false);
-                }}
-              >
-                {setupStep === 1 ? "Cancel" : "Back"}
+              <button className="btn-setup-secondary" onClick={() => setIsSetupOpen(false)}>
+                Cancel
               </button>
-
-              {setupStep < 4 ? (
-                <button className="btn-setup-success" onClick={() => setSetupStep(setupStep + 1)}>
-                  Next Step
-                </button>
-              ) : (
-                <button
-                  className="btn-setup-success"
-                  onClick={handleSaveWorkflow}
-                  disabled={isSavingWorkflow}
-                >
-                  {isSavingWorkflow ? "Initializing..." : "Save \u0026 Initialize"}
-                </button>
-              )}
+              <button
+                className="btn-setup-success"
+                onClick={handleSaveWorkflow}
+                disabled={
+                  isSavingWorkflow ||
+                  !(step1Verified && step2Verified && step3Verified && step4Verified)
+                }
+                title={
+                  !(step1Verified && step2Verified && step3Verified && step4Verified)
+                    ? "Please verify all checklist steps before saving"
+                    : "Save and apply workflow configurations"
+                }
+              >
+                {isSavingWorkflow ? "Initializing..." : "Save & Initialize"}
+              </button>
             </div>
           </div>
         </div>

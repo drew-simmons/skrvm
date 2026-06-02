@@ -76,6 +76,120 @@ fn unblock_issue(issue_id: String, state: State<'_, AppState>) -> Result<(), Str
 pub struct SaveWorkflowPayload {
     pub settings: config::Settings,
     pub prompt_template: String,
+    pub project_dir: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct GitInfo {
+    pub project_dir: String,
+    pub remote_url: Option<String>,
+    pub project_slug: Option<String>,
+    pub current_branch: Option<String>,
+    pub detected_tracker: Option<String>,
+}
+
+#[tauri::command]
+fn detect_local_git_info(state: State<'_, AppState>) -> Result<GitInfo, String> {
+    let store = state
+        .orchestrator
+        .workflow_store
+        .read()
+        .map_err(|e| format!("Failed to read store lock: {}", e))?;
+
+    let workflow_path = store.file_path().to_path_buf();
+    let project_dir = workflow_path
+        .parent()
+        .ok_or_else(|| "Failed to resolve project root directory".to_string())?
+        .to_path_buf();
+
+    let project_dir_str = project_dir.to_string_lossy().to_string();
+
+    let mut url_cmd = std::process::Command::new("git");
+    url_cmd
+        .args(["config", "--get", "remote.origin.url"])
+        .current_dir(&project_dir);
+    let remote_url = match url_cmd.output() {
+        Ok(output) if output.status.success() => {
+            let s = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if s.is_empty() {
+                None
+            } else {
+                Some(s)
+            }
+        }
+        _ => None,
+    };
+
+    let mut branch_cmd = std::process::Command::new("git");
+    branch_cmd
+        .args(["branch", "--show-current"])
+        .current_dir(&project_dir);
+    let mut current_branch = match branch_cmd.output() {
+        Ok(output) if output.status.success() => {
+            let s = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if s.is_empty() {
+                None
+            } else {
+                Some(s)
+            }
+        }
+        _ => None,
+    };
+    if current_branch.is_none() {
+        let mut rev_cmd = std::process::Command::new("git");
+        rev_cmd
+            .args(["rev-parse", "--abbrev-ref", "HEAD"])
+            .current_dir(&project_dir);
+        current_branch = match rev_cmd.output() {
+            Ok(output) if output.status.success() => {
+                let s = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                if s.is_empty() {
+                    None
+                } else {
+                    Some(s)
+                }
+            }
+            _ => None,
+        };
+    }
+
+    let mut project_slug = None;
+    let mut detected_tracker = None;
+
+    if let Some(ref url) = remote_url {
+        if url.contains("github.com") {
+            detected_tracker = Some("github".to_string());
+        } else if url.contains("gitlab.com") {
+            detected_tracker = Some("gitlab".to_string());
+        }
+
+        let cleaned = if let Some(stripped) = url.strip_prefix("git@github.com:") {
+            stripped
+        } else if let Some(stripped) = url.strip_prefix("https://github.com/") {
+            stripped
+        } else if let Some(stripped) = url.strip_prefix("git@gitlab.com:") {
+            stripped
+        } else if let Some(stripped) = url.strip_prefix("https://gitlab.com/") {
+            stripped
+        } else if let Some(idx) = url.find(':') {
+            &url[idx + 1..]
+        } else {
+            url
+        };
+
+        let cleaned = cleaned.strip_suffix(".git").unwrap_or(cleaned);
+        if !cleaned.is_empty() {
+            project_slug = Some(cleaned.to_string());
+        }
+    }
+
+    Ok(GitInfo {
+        project_dir: project_dir_str,
+        remote_url,
+        project_slug,
+        current_branch,
+        detected_tracker,
+    })
 }
 
 #[tauri::command]
@@ -86,10 +200,16 @@ fn get_current_workflow(state: State<'_, AppState>) -> Result<Option<SaveWorkflo
         .read()
         .map_err(|e| format!("Failed to read store lock: {}", e))?;
 
+    let project_dir = store
+        .file_path()
+        .parent()
+        .map(|p| p.to_string_lossy().to_string());
+
     if let Some(workflow) = store.get_current() {
         Ok(Some(SaveWorkflowPayload {
             settings: workflow.config,
             prompt_template: workflow.prompt_template,
+            project_dir,
         }))
     } else {
         Ok(None)
@@ -293,6 +413,120 @@ fn get_session_transcript(file_path: String) -> Result<Vec<serde_json::Value>, S
     Ok(events)
 }
 
+#[tauri::command]
+fn verify_workspace_setup(project_dir: String, workspace_root: String) -> Result<(), String> {
+    let p_path = Path::new(&project_dir);
+    if !p_path.exists() {
+        return Err("Project directory does not exist".to_string());
+    }
+    if !p_path.is_dir() {
+        return Err("Project path is not a directory".to_string());
+    }
+    if !p_path.join(".git").exists() {
+        return Err("Project directory is not a git repository (missing .git folder)".to_string());
+    }
+
+    let w_path = Path::new(&workspace_root);
+    if !w_path.exists() {
+        if let Err(e) = std::fs::create_dir_all(w_path) {
+            return Err(format!(
+                "Workspace root directory does not exist and could not be created: {}",
+                e
+            ));
+        }
+    } else if !w_path.is_dir() {
+        return Err("Workspace root path is not a directory".to_string());
+    }
+
+    if p_path == w_path {
+        return Err(
+            "Project directory and workspace root directory cannot be identical".to_string(),
+        );
+    }
+
+    if let (Ok(p_canon), Ok(w_canon)) = (p_path.canonicalize(), w_path.canonicalize()) {
+        if p_canon == w_canon {
+            return Err(
+                "Project directory and workspace root directory cannot resolve to the same path"
+                    .to_string(),
+            );
+        }
+        if w_canon.starts_with(&p_canon) {
+            return Err(
+                "Workspace root directory cannot be inside the project directory".to_string(),
+            );
+        }
+        if p_canon.starts_with(&w_canon) {
+            return Err(
+                "Project directory cannot be inside the workspace root directory".to_string(),
+            );
+        }
+    }
+
+    Ok(())
+}
+
+#[tauri::command]
+async fn test_tracker_connection(
+    tracker: config::TrackerConfig,
+    project_dir: String,
+) -> Result<usize, String> {
+    let mut settings = config::Settings {
+        tracker,
+        ..Default::default()
+    };
+
+    let p_path = Path::new(&project_dir);
+    settings.finalize(p_path);
+
+    settings
+        .validate()
+        .map_err(|e| format!("Validation error: {}", e))?;
+
+    let issues = tracker::fetch_candidate_issues(&settings)
+        .await
+        .map_err(|e| format!("Connection failed: {}", e))?;
+
+    Ok(issues.len())
+}
+
+#[tauri::command]
+fn verify_agent_command(command: String) -> Result<(), String> {
+    if command.trim().is_empty() {
+        return Err("Command cannot be empty".to_string());
+    }
+    let first_word = command.split_whitespace().next().unwrap_or("");
+
+    let mut found = false;
+    if let Ok(path_env) = std::env::var("PATH") {
+        for path_dir in std::env::split_paths(&path_env) {
+            let exe_path = path_dir.join(first_word);
+            if exe_path.is_file() {
+                found = true;
+                break;
+            }
+        }
+    }
+
+    if !found {
+        return Err(format!(
+            "Executable '{}' not found in system PATH",
+            first_word
+        ));
+    }
+
+    Ok(())
+}
+
+#[tauri::command]
+fn verify_prompt_template(template: String) -> Result<(), String> {
+    let mut jinja_env = minijinja::Environment::new();
+    jinja_env
+        .add_template("prompt", &template)
+        .map_err(|e| format!("Template syntax error: {}", e))?;
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -374,9 +608,14 @@ pub fn run() {
             get_current_workflow,
             get_session_histories,
             get_session_transcript,
+            detect_local_git_info,
             orchestrator::get_sdd_state,
             orchestrator::save_sdd_state,
-            orchestrator::trigger_sdd_step
+            orchestrator::trigger_sdd_step,
+            verify_workspace_setup,
+            test_tracker_connection,
+            verify_agent_command,
+            verify_prompt_template
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
