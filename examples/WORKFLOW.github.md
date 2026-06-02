@@ -62,13 +62,13 @@ hooks:
   # Shell hooks run inside the issue's sandbox workspace
 
   # 1. Runs immediately after sandbox folder creation. Bootstraps the target project repository.
-  after_create: "git clone git@github.com:my-org/my-target-project.git . && git checkout -b skrvm-{{ issue.identifier }}"
+  after_create: "git clone git@github.com:my-org/my-target-project.git . && git checkout -b {{ issue.branch_name }}"
 
   # 2. Runs before launching the coding agent. Prepares environment dependencies.
   before_run: "pnpm install"
 
   # 3. Runs after each successful turn. Commits and pushes progress back to origin.
-  after_run: "git add . && git commit -m 'skrvm: turn progression progress' --allow-empty && git push -u origin HEAD:skrvm-{{ issue.identifier }}"
+  after_run: "git add . && git commit -m 'skrvm: turn progression progress' --allow-empty && git push -u origin HEAD:{{ issue.branch_name }} && (if git remote get-url origin | grep -q 'github.com'; then gh pr create --title '{{ issue.title }}' --body 'Automated changes by Skrvm.' --head '{{ issue.branch_name }}' || true; elif git remote get-url origin | grep -q 'gitlab.com'; then glab mr create --title '{{ issue.title }}' --description 'Automated changes by Skrvm.' --source-branch '{{ issue.branch_name }}' || true; fi)"
 
   # Timeout for each shell hook (in milliseconds)
   timeout_ms: 120000

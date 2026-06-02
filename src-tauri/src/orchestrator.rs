@@ -3,7 +3,7 @@ use crate::config::Settings;
 use crate::path_safety;
 use crate::tracker::{self, Issue};
 use std::collections::{HashMap, HashSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 
 use tauri::Emitter;
@@ -340,7 +340,7 @@ impl Orchestrator {
         tauri::async_runtime::spawn(async move {
             let runner_res = agent_runner::run_agent(
                 issue.clone(),
-                absolute_workspace,
+                absolute_workspace.clone(),
                 settings_clone.clone(),
                 prompt_template,
                 attempt,
@@ -356,7 +356,42 @@ impl Orchestrator {
                 total_tokens: 0,
             };
 
+            let history_dir = absolute_workspace.join("history");
+            std::fs::create_dir_all(&history_dir).ok();
+            let history_file = history_dir.join(format!("{}-attempt-{}.jsonl", issue_id, attempt));
+
+            // Write header line if file doesn't exist
+            if !history_file.exists() {
+                let header = serde_json::json!({
+                    "type": "header",
+                    "issue_id": issue_id.clone(),
+                    "identifier": identifier.clone(),
+                    "title": issue.title.clone(),
+                    "attempt": attempt,
+                    "started_at": chrono::Utc::now().to_rfc3339(),
+                });
+                if let Ok(json_str) = serde_json::to_string(&header) {
+                    std::fs::write(&history_file, format!("{}\n", json_str)).ok();
+                }
+            }
+
             while let Some(update) = rx.recv().await {
+                // Write update to history file
+                let line = serde_json::json!({
+                    "type": "update",
+                    "data": update
+                });
+                if let Ok(json_str) = serde_json::to_string(&line) {
+                    if let Ok(mut file) = std::fs::OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .open(&history_file)
+                    {
+                        use std::io::Write;
+                        writeln!(file, "{}", json_str).ok();
+                    }
+                }
+
                 // Update live entry
                 if let Ok(mut state) = state_arc.write() {
                     if let Some(entry) = state.running.get_mut(&issue_id) {
@@ -535,6 +570,7 @@ impl Orchestrator {
                             );
                             let workspace_path = workspace_root.join(sanitized_key);
                             if workspace_path.exists() {
+                                archive_history_before_deletion(&workspace_path);
                                 std::fs::remove_dir_all(&workspace_path).ok();
                             }
                         } else {
@@ -599,6 +635,7 @@ impl Orchestrator {
                             path_safety::get_workspace_dir_name(&issue.identifier, &issue.title);
                         let workspace_path = workspace_root.join(sanitized_key);
                         if workspace_path.exists() {
+                            archive_history_before_deletion(&workspace_path);
                             std::fs::remove_dir_all(&workspace_path).ok();
                         }
                     } else if !active_set.contains(&issue.state.to_lowercase())
@@ -680,6 +717,7 @@ impl Orchestrator {
                             path_safety::get_workspace_dir_name(&issue.identifier, &issue.title);
                         let workspace_path = workspace_root.join(sanitized_key);
                         if workspace_path.exists() {
+                            archive_history_before_deletion(&workspace_path);
                             std::fs::remove_dir_all(&workspace_path).ok();
                         }
                     } else if !active_set.contains(&issue.state.to_lowercase())
@@ -728,6 +766,7 @@ impl Orchestrator {
                     let path = workspace_root.join(sanitized);
                     if path.exists() {
                         println!("[Cleanup] Removing terminal workspace at {:?}", path);
+                        archive_history_before_deletion(&path);
                         std::fs::remove_dir_all(&path).ok();
                     }
                 }
@@ -737,6 +776,46 @@ impl Orchestrator {
                     "[Cleanup] Warning: Failed to fetch terminal issues during startup: {}",
                     e
                 );
+            }
+        }
+    }
+}
+
+pub fn get_archive_dir() -> PathBuf {
+    if let Some(mut home) = dirs::home_dir() {
+        home.push(".skrvm");
+        home.push("archive");
+        home
+    } else {
+        std::env::temp_dir().join("skrvm_archive")
+    }
+}
+
+pub fn archive_history_before_deletion(workspace_path: &Path) {
+    let history_dir = workspace_path.join("history");
+    if history_dir.exists() {
+        let archive_dir = get_archive_dir();
+        if let Err(e) = std::fs::create_dir_all(&archive_dir) {
+            eprintln!("[Orchestrator] Failed to create archive directory: {}", e);
+            return;
+        }
+
+        if let Ok(entries) = std::fs::read_dir(&history_dir) {
+            for entry in entries.flatten() {
+                let file_path = entry.path();
+                if file_path.is_file() && file_path.extension().is_some_and(|ext| ext == "jsonl") {
+                    if let Some(file_name) = file_path.file_name() {
+                        let dest_path = archive_dir.join(file_name);
+                        if let Err(e) = std::fs::copy(&file_path, &dest_path) {
+                            eprintln!(
+                                "[Orchestrator] Failed to copy history file {:?}: {}",
+                                file_name, e
+                            );
+                        } else {
+                            println!("[Orchestrator] Archived history file {:?}", file_name);
+                        }
+                    }
+                }
             }
         }
     }
@@ -902,5 +981,29 @@ mod tests {
         };
 
         assert!(orch.should_dispatch(&cleared_issue, &settings).unwrap());
+    }
+
+    #[test]
+    fn test_archive_history_before_deletion() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "skrvm_test_workspace_{}",
+            chrono::Utc::now().timestamp_millis()
+        ));
+        let history_dir = temp_dir.join("history");
+        std::fs::create_dir_all(&history_dir).unwrap();
+
+        let file_path = history_dir.join("test-session.jsonl");
+        std::fs::write(&file_path, "mock-data\n").unwrap();
+
+        archive_history_before_deletion(&temp_dir);
+
+        let archive_dir = get_archive_dir();
+        let archived_file = archive_dir.join("test-session.jsonl");
+
+        assert!(archived_file.exists());
+
+        // Clean up
+        std::fs::remove_dir_all(&temp_dir).ok();
+        std::fs::remove_file(&archived_file).ok();
     }
 }

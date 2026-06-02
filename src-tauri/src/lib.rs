@@ -6,7 +6,9 @@ mod tracker;
 mod workflow;
 
 use orchestrator::Orchestrator;
-use std::path::PathBuf;
+use std::collections::HashSet;
+use std::io::BufRead;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tauri::{Manager, State};
 
@@ -150,6 +152,147 @@ async fn save_workflow(
     Ok(workflow.config)
 }
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct SessionHistoryEntry {
+    pub session_id: String,
+    pub issue_id: String,
+    pub identifier: String,
+    pub title: String,
+    pub attempt: usize,
+    pub started_at: String,
+    pub file_path: String,
+}
+
+fn read_session_header(file_path: &Path) -> Option<SessionHistoryEntry> {
+    let file = std::fs::File::open(file_path).ok()?;
+    let reader = std::io::BufReader::new(file);
+    if let Some(Ok(line)) = reader.lines().next() {
+        let val: serde_json::Value = serde_json::from_str(&line).ok()?;
+        if val["type"] == "header" {
+            let session_id = file_path.file_stem()?.to_string_lossy().into_owned();
+            return Some(SessionHistoryEntry {
+                session_id,
+                issue_id: val["issue_id"].as_str()?.to_string(),
+                identifier: val["identifier"].as_str()?.to_string(),
+                title: val["title"].as_str()?.to_string(),
+                attempt: val["attempt"].as_u64()? as usize,
+                started_at: val["started_at"].as_str()?.to_string(),
+                file_path: file_path.to_string_lossy().into_owned(),
+            });
+        }
+    }
+    None
+}
+
+#[tauri::command]
+fn get_session_histories(state: State<'_, AppState>) -> Result<Vec<SessionHistoryEntry>, String> {
+    let settings = {
+        let store = state
+            .orchestrator
+            .workflow_store
+            .read()
+            .map_err(|e| format!("Failed to read workflow store: {}", e))?;
+        store.get_current().map(|w| w.config).unwrap_or_default()
+    };
+
+    let mut entries = Vec::new();
+    let mut seen_sessions = HashSet::new();
+
+    // 1. Scan workspaces
+    let workspace_root = Path::new(&settings.workspace.root);
+    if workspace_root.exists() {
+        if let Ok(workspace_dirs) = std::fs::read_dir(workspace_root) {
+            for dir_entry in workspace_dirs.flatten() {
+                let dir_path = dir_entry.path();
+                if dir_path.is_dir() {
+                    let history_dir = dir_path.join("history");
+                    if history_dir.exists() {
+                        if let Ok(files) = std::fs::read_dir(&history_dir) {
+                            for file_entry in files.flatten() {
+                                let path = file_entry.path();
+                                if path.is_file()
+                                    && path.extension().is_some_and(|ext| ext == "jsonl")
+                                {
+                                    if let Some(entry) = read_session_header(&path) {
+                                        if seen_sessions.insert(entry.session_id.clone()) {
+                                            entries.push(entry);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // 2. Scan central archive
+    let archive_dir = orchestrator::get_archive_dir();
+    if archive_dir.exists() {
+        if let Ok(files) = std::fs::read_dir(&archive_dir) {
+            for file_entry in files.flatten() {
+                let path = file_entry.path();
+                if path.is_file() && path.extension().is_some_and(|ext| ext == "jsonl") {
+                    if let Some(entry) = read_session_header(&path) {
+                        if seen_sessions.insert(entry.session_id.clone()) {
+                            entries.push(entry);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Sort by started_at descending (newest first)
+    entries.sort_by(|a, b| b.started_at.cmp(&a.started_at));
+
+    Ok(entries)
+}
+
+#[tauri::command]
+fn get_session_transcript(file_path: String) -> Result<Vec<serde_json::Value>, String> {
+    let path = Path::new(&file_path);
+    if !path.exists() {
+        return Err(format!("Transcript file does not exist: {}", file_path));
+    }
+
+    // Security check: must be either inside the configured workspace root or inside the central archive directory
+    let canonical_path = path
+        .canonicalize()
+        .map_err(|e| format!("Invalid path: {}", e))?;
+    let archive_dir = orchestrator::get_archive_dir()
+        .canonicalize()
+        .unwrap_or(orchestrator::get_archive_dir());
+
+    let is_in_archive = canonical_path.starts_with(&archive_dir);
+    let is_in_history = canonical_path
+        .components()
+        .any(|c| c.as_os_str() == "history");
+
+    if !is_in_archive && !is_in_history {
+        return Err("Access denied: path is outside permitted history directories".to_string());
+    }
+
+    let file = std::fs::File::open(path).map_err(|e| format!("Failed to open file: {}", e))?;
+    let reader = std::io::BufReader::new(file);
+    let mut events = Vec::new();
+
+    for line_res in reader.lines() {
+        let line = line_res.map_err(|e| format!("Failed to read line: {}", e))?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        let val: serde_json::Value =
+            serde_json::from_str(&line).map_err(|e| format!("Invalid JSON line: {}", e))?;
+        if val["type"] == "update" {
+            events.push(val["data"].clone());
+        }
+    }
+
+    Ok(events)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -228,7 +371,9 @@ pub fn run() {
             reload_workflow,
             unblock_issue,
             save_workflow,
-            get_current_workflow
+            get_current_workflow,
+            get_session_histories,
+            get_session_transcript
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

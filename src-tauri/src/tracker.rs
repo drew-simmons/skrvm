@@ -686,6 +686,19 @@ fn normalize_issue(node: IssueNode, assignee_filter: Option<&str>) -> Option<Iss
         }
     }
 
+    let branch_name = node.branch_name.unwrap_or_else(|| {
+        let branch_slug = slugify(&node.title);
+        if branch_slug.is_empty() {
+            format!("feature/issue-{}", node.identifier.to_lowercase())
+        } else {
+            format!(
+                "feature/issue-{}-{}",
+                node.identifier.to_lowercase(),
+                branch_slug
+            )
+        }
+    });
+
     Some(Issue {
         id: node.id,
         identifier: node.identifier,
@@ -693,7 +706,7 @@ fn normalize_issue(node: IssueNode, assignee_filter: Option<&str>) -> Option<Iss
         description: node.description,
         priority: node.priority,
         state: state_name,
-        branch_name: node.branch_name,
+        branch_name: Some(branch_name),
         url: node.url,
         assignee_id,
         blocked_by,
@@ -843,6 +856,13 @@ fn normalize_jira_issue(node: JiraIssueNode, assignee_filter: Option<&str>) -> I
         }
     }
 
+    let branch_slug = slugify(&node.fields.summary);
+    let branch_name = if branch_slug.is_empty() {
+        format!("feature/issue-{}", node.key.to_lowercase())
+    } else {
+        format!("feature/issue-{}-{}", node.key.to_lowercase(), branch_slug)
+    };
+
     // construct raw link URL best effort
     let jira_url = Some(format!("{}/browse/{}", node.key, node.key));
 
@@ -853,7 +873,7 @@ fn normalize_jira_issue(node: JiraIssueNode, assignee_filter: Option<&str>) -> I
         description: node.fields.description,
         priority: node.fields.priority.map(|p| map_jira_priority(&p.name)),
         state: state_name,
-        branch_name: None,
+        branch_name: Some(branch_name),
         url: jira_url,
         assignee_id,
         blocked_by,
@@ -1237,7 +1257,12 @@ fn normalize_github_issue(node: GitHubIssue, config: &Settings) -> Issue {
         _ => true,
     };
 
-    let branch_name = format!("feature/issue-{}", node.number);
+    let branch_slug = slugify(&node.title);
+    let branch_name = if branch_slug.is_empty() {
+        format!("feature/issue-{}", node.number)
+    } else {
+        format!("feature/issue-{}-{}", node.number, branch_slug)
+    };
 
     Issue {
         id: node.number.to_string(),
@@ -1394,6 +1419,23 @@ async fn fetch_issues_by_states_github(
     Ok(filtered)
 }
 
+fn slugify(text: &str) -> String {
+    let mut slug = String::new();
+    let mut last_was_dash = false;
+    for c in text.chars() {
+        if c.is_alphanumeric() {
+            slug.push(c.to_ascii_lowercase());
+            last_was_dash = false;
+        } else if !last_was_dash {
+            slug.push('-');
+            last_was_dash = true;
+        }
+    }
+    let mut trimmed = slug.trim_matches('-').to_string();
+    trimmed.truncate(50);
+    trimmed.trim_matches('-').to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1449,6 +1491,10 @@ mod tests {
         );
         assert_eq!(issue.priority, Some(2)); // High maps to 2
         assert_eq!(issue.state, "Todo");
+        assert_eq!(
+            issue.branch_name,
+            Some("feature/issue-proj-123-fix-some-bugs".to_string())
+        );
         assert_eq!(issue.assignee_id, Some("user-456".to_string()));
         assert_eq!(issue.assigned_to_worker, true);
         assert_eq!(
@@ -1501,6 +1547,10 @@ mod tests {
         assert_eq!(issue.title, "Fix alignment");
         assert_eq!(issue.description, Some("The alignment is off".to_string()));
         assert_eq!(issue.state, "In Progress");
+        assert_eq!(
+            issue.branch_name,
+            Some("feature/issue-42-fix-alignment".to_string())
+        );
         assert_eq!(issue.assignee_id, Some("drew-simmons".to_string()));
         assert_eq!(issue.assigned_to_worker, true);
         assert_eq!(issue.labels, vec!["In Progress".to_string()]);

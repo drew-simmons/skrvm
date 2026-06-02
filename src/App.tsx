@@ -244,6 +244,43 @@ orchestrator to resolve GitHub Issue **#{{ issue.identifier }}**.
     }
   };
 
+  // Tab switching state
+  const [activeTab, setActiveTab] = useState<"kanban" | "history">("kanban");
+
+  // History states
+  const [histories, setHistories] = useState<any[]>([]);
+  const [isLoadingHistories, setIsLoadingHistories] = useState<boolean>(false);
+  const [selectedHistory, setSelectedHistory] = useState<any | null>(null);
+  const [historyTranscript, setHistoryTranscript] = useState<any[]>([]);
+  const [isLoadingTranscript, setIsLoadingTranscript] = useState<boolean>(false);
+  const [historySearchQuery, setHistorySearchQuery] = useState<string>("");
+
+  const fetchHistories = async () => {
+    setIsLoadingHistories(true);
+    try {
+      const data: any[] = await invoke("get_session_histories");
+      setHistories(data);
+    } catch (e) {
+      console.error("Failed to fetch session histories:", e);
+    } finally {
+      setIsLoadingHistories(false);
+    }
+  };
+
+  const openHistoryTranscript = async (entry: any) => {
+    setSelectedHistory(entry);
+    setHistoryTranscript([]);
+    setIsLoadingTranscript(true);
+    try {
+      const data: any[] = await invoke("get_session_transcript", { filePath: entry.file_path });
+      setHistoryTranscript(data);
+    } catch (e) {
+      alert(`Failed to load transcript: ${e}`);
+    } finally {
+      setIsLoadingTranscript(false);
+    }
+  };
+
   // Open setup and fetch current settings if they exist
   const openSetupWizard = async () => {
     try {
@@ -1121,91 +1158,167 @@ orchestrator to resolve GitHub Issue **#{{ issue.identifier }}**.
         </div>
       </section>
 
-      {/* Kanban Board Area */}
-      <section className="kanban-board-container">
-        <div className="kanban-board">
-          {/* Column 1: Todo */}
-          <div className="kanban-column">
-            <div className="kanban-column-header">
-              <span className="kanban-column-title" style={{ color: "var(--color-zinc-400)" }}>
-                ● Backlog / Todo
-              </span>
-              <span className="kanban-column-count">{todoColumnTickets.length}</span>
-            </div>
-            <div className="kanban-column-body">
-              {todoColumnTickets.length === 0 ? (
-                <div className="empty-state">
-                  <span className="empty-state-subtitle">No items in backlog</span>
-                </div>
-              ) : (
-                todoColumnTickets.map((ticket) => (
-                  <div
-                    key={ticket.id}
-                    className={`kanban-card card-todo ${selectedIssueId === ticket.id ? "selected" : ""}`}
-                    onClick={() => setSelectedIssueId(ticket.id)}
-                  >
-                    <div className="card-header">
-                      <div className="card-identity">
-                        <span className="issue-tag">{formatIdentifier(ticket.identifier)}</span>
-                      </div>
-                      {ticket.priority && <span className="card-priority">{ticket.priority}</span>}
-                    </div>
-                    <span className="card-title">{ticket.title}</span>
-                    <div className="card-footer">
-                      {ticket.type === "retry" ? (
-                        <>
-                          <div className="card-meta-left">
-                            <div className="status-dot retrying"></div>
-                            <span>Attempt #{ticket.attempt}</span>
-                          </div>
-                          <span style={{ color: "var(--color-purple)", fontFamily: "monospace" }}>
-                            Retrying
-                          </span>
-                        </>
-                      ) : (
-                        <>
-                          <div className="card-meta-left">
-                            <div
-                              className="status-dot backlog"
-                              style={{ backgroundColor: "var(--color-zinc-400)" }}
-                            ></div>
-                            <span>Open</span>
-                          </div>
-                          <span style={{ color: "var(--color-zinc-400)", fontFamily: "monospace" }}>
-                            Backlog
-                          </span>
-                        </>
-                      )}
-                    </div>
-                  </div>
-                ))
-              )}
-            </div>
-          </div>
+      {/* View Selector Tabs */}
+      <div className="view-selector-tabs">
+        <button
+          className={`btn-tab ${activeTab === "kanban" ? "active" : ""}`}
+          onClick={() => setActiveTab("kanban")}
+        >
+          Kanban Board
+        </button>
+        <button
+          className={`btn-tab ${activeTab === "history" ? "active" : ""}`}
+          onClick={() => {
+            setActiveTab("history");
+            fetchHistories();
+          }}
+        >
+          Session History
+        </button>
+      </div>
 
-          {/* Column 2: In Progress */}
-          <div className="kanban-column">
-            <div className="kanban-column-header">
-              <span className="kanban-column-title" style={{ color: "var(--color-primary)" }}>
-                ● In Progress
-              </span>
-              <span className="kanban-column-count">{inProgressColumnTickets.length}</span>
-            </div>
-            <div className="kanban-column-body">
-              {inProgressColumnTickets.length === 0 ? (
-                <div className="empty-state">
-                  <span className="empty-state-subtitle">Idle. Awaiting candidate tickets...</span>
-                </div>
-              ) : (
-                inProgressColumnTickets.map((ticket) => {
-                  const turnProgress = Math.min(
-                    100,
-                    Math.ceil((ticket.entry.turn_count / 20) * 100),
-                  );
-                  return (
+      {activeTab === "kanban" ? (
+        <section className="kanban-board-container">
+          <div className="kanban-board">
+            {/* Column 1: Todo */}
+            <div className="kanban-column">
+              <div className="kanban-column-header">
+                <span className="kanban-column-title" style={{ color: "var(--color-zinc-400)" }}>
+                  ● Backlog / Todo
+                </span>
+                <span className="kanban-column-count">{todoColumnTickets.length}</span>
+              </div>
+              <div className="kanban-column-body">
+                {todoColumnTickets.length === 0 ? (
+                  <div className="empty-state">
+                    <span className="empty-state-subtitle">No items in backlog</span>
+                  </div>
+                ) : (
+                  todoColumnTickets.map((ticket) => (
                     <div
                       key={ticket.id}
-                      className={`kanban-card card-in-progress ${selectedIssueId === ticket.id ? "selected" : ""}`}
+                      className={`kanban-card card-todo ${selectedIssueId === ticket.id ? "selected" : ""}`}
+                      onClick={() => setSelectedIssueId(ticket.id)}
+                    >
+                      <div className="card-header">
+                        <div className="card-identity">
+                          <span className="issue-tag">{formatIdentifier(ticket.identifier)}</span>
+                        </div>
+                        {ticket.priority && (
+                          <span className="card-priority">{ticket.priority}</span>
+                        )}
+                      </div>
+                      <span className="card-title">{ticket.title}</span>
+                      <div className="card-footer">
+                        {ticket.type === "retry" ? (
+                          <>
+                            <div className="card-meta-left">
+                              <div className="status-dot retrying"></div>
+                              <span>Attempt #{ticket.attempt}</span>
+                            </div>
+                            <span style={{ color: "var(--color-purple)", fontFamily: "monospace" }}>
+                              Retrying
+                            </span>
+                          </>
+                        ) : (
+                          <>
+                            <div className="card-meta-left">
+                              <div
+                                className="status-dot backlog"
+                                style={{ backgroundColor: "var(--color-zinc-400)" }}
+                              ></div>
+                              <span>Open</span>
+                            </div>
+                            <span
+                              style={{ color: "var(--color-zinc-400)", fontFamily: "monospace" }}
+                            >
+                              Backlog
+                            </span>
+                          </>
+                        )}
+                      </div>
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+
+            {/* Column 2: In Progress */}
+            <div className="kanban-column">
+              <div className="kanban-column-header">
+                <span className="kanban-column-title" style={{ color: "var(--color-primary)" }}>
+                  ● In Progress
+                </span>
+                <span className="kanban-column-count">{inProgressColumnTickets.length}</span>
+              </div>
+              <div className="kanban-column-body">
+                {inProgressColumnTickets.length === 0 ? (
+                  <div className="empty-state">
+                    <span className="empty-state-subtitle">
+                      Idle. Awaiting candidate tickets...
+                    </span>
+                  </div>
+                ) : (
+                  inProgressColumnTickets.map((ticket) => {
+                    const turnProgress = Math.min(
+                      100,
+                      Math.ceil((ticket.entry.turn_count / 20) * 100),
+                    );
+                    return (
+                      <div
+                        key={ticket.id}
+                        className={`kanban-card card-in-progress ${selectedIssueId === ticket.id ? "selected" : ""}`}
+                        onClick={() => setSelectedIssueId(ticket.id)}
+                      >
+                        <div className="card-header">
+                          <div className="card-identity">
+                            <span className="issue-tag">{formatIdentifier(ticket.identifier)}</span>
+                          </div>
+                          {ticket.priority && (
+                            <span className="card-priority">{ticket.priority}</span>
+                          )}
+                        </div>
+                        <span className="card-title">{ticket.title}</span>
+                        <div className="card-footer">
+                          <div className="card-meta-left">
+                            <div className="status-dot running"></div>
+                            <span>Turn {ticket.entry.turn_count}</span>
+                          </div>
+                          <div
+                            className="progress-bar-bg"
+                            title={`${turnProgress}% turns completed`}
+                          >
+                            <div
+                              className="progress-bar-fill"
+                              style={{ width: `${turnProgress}%` }}
+                            ></div>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+            </div>
+
+            {/* Column 3: Human Review */}
+            <div className="kanban-column">
+              <div className="kanban-column-header">
+                <span className="kanban-column-title" style={{ color: "var(--color-amber)" }}>
+                  ● Human Review
+                </span>
+                <span className="kanban-column-count">{blockedColumnTickets.length}</span>
+              </div>
+              <div className="kanban-column-body">
+                {blockedColumnTickets.length === 0 ? (
+                  <div className="empty-state">
+                    <span className="empty-state-subtitle">No blocked worker sessions</span>
+                  </div>
+                ) : (
+                  blockedColumnTickets.map((ticket) => (
+                    <div
+                      key={ticket.id}
+                      className={`kanban-card card-blocked ${selectedIssueId === ticket.id ? "selected" : ""}`}
                       onClick={() => setSelectedIssueId(ticket.id)}
                     >
                       <div className="card-header">
@@ -1219,117 +1332,138 @@ orchestrator to resolve GitHub Issue **#{{ issue.identifier }}**.
                       <span className="card-title">{ticket.title}</span>
                       <div className="card-footer">
                         <div className="card-meta-left">
-                          <div className="status-dot running"></div>
-                          <span>Turn {ticket.entry.turn_count}</span>
+                          <div className="status-dot blocked"></div>
+                          <span style={{ color: "var(--color-amber)", fontWeight: 500 }}>
+                            Action Required
+                          </span>
                         </div>
-                        <div className="progress-bar-bg" title={`${turnProgress}% turns completed`}>
-                          <div
-                            className="progress-bar-fill"
-                            style={{ width: `${turnProgress}%` }}
-                          ></div>
-                        </div>
+                        <span className="macos-badge">Handoff</span>
                       </div>
                     </div>
-                  );
-                })
-              )}
+                  ))
+                )}
+              </div>
             </div>
-          </div>
 
-          {/* Column 3: Human Review */}
-          <div className="kanban-column">
-            <div className="kanban-column-header">
-              <span className="kanban-column-title" style={{ color: "var(--color-amber)" }}>
-                ● Human Review
-              </span>
-              <span className="kanban-column-count">{blockedColumnTickets.length}</span>
-            </div>
-            <div className="kanban-column-body">
-              {blockedColumnTickets.length === 0 ? (
-                <div className="empty-state">
-                  <span className="empty-state-subtitle">No blocked worker sessions</span>
-                </div>
-              ) : (
-                blockedColumnTickets.map((ticket) => (
-                  <div
-                    key={ticket.id}
-                    className={`kanban-card card-blocked ${selectedIssueId === ticket.id ? "selected" : ""}`}
-                    onClick={() => setSelectedIssueId(ticket.id)}
-                  >
-                    <div className="card-header">
-                      <div className="card-identity">
-                        <span className="issue-tag">{formatIdentifier(ticket.identifier)}</span>
+            {/* Column 4: Done */}
+            <div className="kanban-column">
+              <div className="kanban-column-header">
+                <span className="kanban-column-title" style={{ color: "var(--color-emerald)" }}>
+                  ● Done
+                </span>
+                <span className="kanban-column-count">{doneColumnTickets.length}</span>
+              </div>
+              <div className="kanban-column-body">
+                {doneColumnTickets.length === 0 ? (
+                  <div className="empty-state">
+                    <span className="empty-state-subtitle">No completed tickets</span>
+                  </div>
+                ) : (
+                  doneColumnTickets.map((ticket) => (
+                    <div
+                      key={ticket.id}
+                      className={`kanban-card card-done ${selectedIssueId === ticket.id ? "selected" : ""}`}
+                      onClick={() => setSelectedIssueId(ticket.id)}
+                    >
+                      <div className="card-header">
+                        <div className="card-identity">
+                          <span className="issue-tag">{formatIdentifier(ticket.identifier)}</span>
+                        </div>
+                        {ticket.priority && (
+                          <span className="card-priority">{ticket.priority}</span>
+                        )}
                       </div>
-                      {ticket.priority && <span className="card-priority">{ticket.priority}</span>}
-                    </div>
-                    <span className="card-title">{ticket.title}</span>
-                    <div className="card-footer">
-                      <div className="card-meta-left">
-                        <div className="status-dot blocked"></div>
-                        <span style={{ color: "var(--color-amber)", fontWeight: 500 }}>
-                          Action Required
+                      <span className="card-title">{ticket.title}</span>
+                      <div className="card-footer">
+                        <div className="card-meta-left">
+                          <div
+                            className="status-dot"
+                            style={{ backgroundColor: "var(--color-emerald)" }}
+                          ></div>
+                          <span style={{ color: "var(--color-emerald)" }}>Completed</span>
+                        </div>
+                        <span
+                          className="macos-badge"
+                          style={{
+                            backgroundImage: "linear-gradient(180deg, #34c759 0%, #248a3d 100%)",
+                            borderColor: "#1e6d30",
+                          }}
+                        >
+                          Merged
                         </span>
                       </div>
-                      <span className="macos-badge">Handoff</span>
                     </div>
-                  </div>
-                ))
-              )}
+                  ))
+                )}
+              </div>
             </div>
+          </div>
+        </section>
+      ) : (
+        /* Session History Area */
+        <section className="history-container">
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <span
+              className="detail-section-title"
+              style={{ margin: 0, border: "none", padding: 0 }}
+            >
+              Completed & Pending Sessions
+            </span>
+            <input
+              type="text"
+              placeholder="Search history..."
+              className="history-search-input"
+              value={historySearchQuery}
+              onChange={(e) => setHistorySearchQuery(e.target.value)}
+            />
           </div>
 
-          {/* Column 4: Done */}
-          <div className="kanban-column">
-            <div className="kanban-column-header">
-              <span className="kanban-column-title" style={{ color: "var(--color-emerald)" }}>
-                ● Done
-              </span>
-              <span className="kanban-column-count">{doneColumnTickets.length}</span>
-            </div>
-            <div className="kanban-column-body">
-              {doneColumnTickets.length === 0 ? (
-                <div className="empty-state">
-                  <span className="empty-state-subtitle">No completed tickets</span>
-                </div>
-              ) : (
-                doneColumnTickets.map((ticket) => (
+          <div className="history-card-list">
+            {isLoadingHistories ? (
+              <div className="empty-state">
+                <span className="empty-state-subtitle">Loading histories...</span>
+              </div>
+            ) : histories.filter(
+                (h) =>
+                  h.identifier.toLowerCase().includes(historySearchQuery.toLowerCase()) ||
+                  h.title.toLowerCase().includes(historySearchQuery.toLowerCase()),
+              ).length === 0 ? (
+              <div className="empty-state">
+                <span className="empty-state-subtitle">No session histories found</span>
+              </div>
+            ) : (
+              histories
+                .filter(
+                  (h) =>
+                    h.identifier.toLowerCase().includes(historySearchQuery.toLowerCase()) ||
+                    h.title.toLowerCase().includes(historySearchQuery.toLowerCase()),
+                )
+                .map((entry) => (
                   <div
-                    key={ticket.id}
-                    className={`kanban-card card-done ${selectedIssueId === ticket.id ? "selected" : ""}`}
-                    onClick={() => setSelectedIssueId(ticket.id)}
+                    key={entry.session_id}
+                    className="history-card"
+                    onClick={() => openHistoryTranscript(entry)}
                   >
-                    <div className="card-header">
-                      <div className="card-identity">
-                        <span className="issue-tag">{formatIdentifier(ticket.identifier)}</span>
+                    <div className="history-card-left">
+                      <div className="history-card-title-row">
+                        <span className="issue-tag">{formatIdentifier(entry.identifier)}</span>
+                        <span className="history-card-title">{entry.title}</span>
                       </div>
-                      {ticket.priority && <span className="card-priority">{ticket.priority}</span>}
+                      <div className="history-card-meta">
+                        <span>Attempt: #{entry.attempt}</span>
+                        <span>•</span>
+                        <span>Started: {new Date(entry.started_at).toLocaleString()}</span>
+                      </div>
                     </div>
-                    <span className="card-title">{ticket.title}</span>
-                    <div className="card-footer">
-                      <div className="card-meta-left">
-                        <div
-                          className="status-dot"
-                          style={{ backgroundColor: "var(--color-emerald)" }}
-                        ></div>
-                        <span style={{ color: "var(--color-emerald)" }}>Completed</span>
-                      </div>
-                      <span
-                        className="macos-badge"
-                        style={{
-                          backgroundImage: "linear-gradient(180deg, #34c759 0%, #248a3d 100%)",
-                          borderColor: "#1e6d30",
-                        }}
-                      >
-                        Merged
-                      </span>
+                    <div className="history-card-right">
+                      <button className="btn-premium">View Log</button>
                     </div>
                   </div>
                 ))
-              )}
-            </div>
+            )}
           </div>
-        </div>
-      </section>
+        </section>
+      )}
 
       {/* Slide-out sheet Details Panel Drawer Backdrop */}
       <div
@@ -1663,6 +1797,96 @@ orchestrator to resolve GitHub Issue **#{{ issue.identifier }}**.
           </div>
         )}
       </div>
+
+      {/* History Transcript Modal Overlay */}
+      {selectedHistory && (
+        <div className="modal-backdrop" onClick={() => setSelectedHistory(null)}>
+          <div
+            className="setup-modal-content"
+            style={{ maxWidth: "800px" }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="setup-modal-header">
+              <span
+                className="setup-modal-title"
+                style={{ display: "flex", gap: "8px", alignItems: "center" }}
+              >
+                <span className="issue-tag">{formatIdentifier(selectedHistory.identifier)}</span>
+                <span>{selectedHistory.title} — Transcript Log</span>
+              </span>
+              <button className="setup-modal-close" onClick={() => setSelectedHistory(null)}>
+                &times;
+              </button>
+            </div>
+
+            <div className="setup-modal-body transcript-modal-body">
+              <div className="meta-grid">
+                <div className="meta-item">
+                  <span className="meta-label">Session ID</span>
+                  <span className="meta-value">{selectedHistory.session_id}</span>
+                </div>
+                <div className="meta-item">
+                  <span className="meta-label">Attempt</span>
+                  <span className="meta-value">#{selectedHistory.attempt}</span>
+                </div>
+                <div className="meta-item">
+                  <span className="meta-label">Started At</span>
+                  <span className="meta-value">
+                    {new Date(selectedHistory.started_at).toLocaleString()}
+                  </span>
+                </div>
+                <div className="meta-item">
+                  <span className="meta-label">Source Path</span>
+                  <span className="meta-value" title={selectedHistory.file_path}>
+                    {selectedHistory.file_path}
+                  </span>
+                </div>
+              </div>
+
+              <div className="detail-section-title">Execution Log Console</div>
+              <div className="transcript-console">
+                {isLoadingTranscript ? (
+                  <div className="empty-state">
+                    <span className="empty-state-subtitle">Loading execution logs...</span>
+                  </div>
+                ) : historyTranscript.length === 0 ? (
+                  <div className="empty-state">
+                    <span className="empty-state-subtitle">No logs recorded for this session</span>
+                  </div>
+                ) : (
+                  historyTranscript.map((log: any, index: number) => {
+                    const isError =
+                      log.event.toLowerCase().includes("fail") ||
+                      log.event.toLowerCase().includes("err");
+                    const isSuccess =
+                      log.event.toLowerCase().includes("complete") ||
+                      log.event.toLowerCase().includes("success");
+                    const isWarning =
+                      log.event.toLowerCase().includes("block") ||
+                      log.event.toLowerCase().includes("warn") ||
+                      log.event.toLowerCase().includes("input");
+
+                    let eventClass = "";
+                    if (isError) eventClass = "error";
+                    else if (isSuccess) eventClass = "success";
+                    else if (isWarning) eventClass = "warning";
+
+                    const time = new Date(log.timestamp).toLocaleTimeString();
+
+                    return (
+                      <div key={index} className="transcript-row">
+                        <span className="transcript-time">[{time}]</span>
+                        <span className={`transcript-event ${eventClass}`}>{log.event}</span>
+                        {log.message && <span className="transcript-message">: {log.message}</span>}
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Setup Modal */}
       {isSetupOpen && (
