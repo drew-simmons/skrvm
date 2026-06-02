@@ -211,4 +211,5 @@ Cargo.lock
 WORKFLOW.md
 scratch/
 workspaces/
+.atl/
 .rumdl_cache
