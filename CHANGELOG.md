@@ -2,16 +2,17 @@
 
 ## [0.5.0](https://github.com/drew-simmons/skrvm/compare/v0.4.0...v0.5.0) (2026-06-01)
 
-
 ### Features
 
-* support coding agents rpc commands and fix workflows ([8f057e5](https://github.com/drew-simmons/skrvm/commit/8f057e5e08c78a23aeffc3e1c273ceb8c72aa7dd))
-
+* support coding agents rpc commands and fix workflows
+  ([8f057e5](https://github.com/drew-simmons/skrvm/commit/8f057e5e08c78a23aeffc3e1c273ceb8c72aa7dd))
 
 ### Bug Fixes
 
-* dependabot package ecosystem ([9c45d9b](https://github.com/drew-simmons/skrvm/commit/9c45d9b75af9551894c9187aa99a9bef784e82ee))
-* login shell ([e345f74](https://github.com/drew-simmons/skrvm/commit/e345f74beeeeb77a671ec91ef799c359dea903a1))
+* dependabot package ecosystem
+  ([9c45d9b](https://github.com/drew-simmons/skrvm/commit/9c45d9b75af9551894c9187aa99a9bef784e82ee))
+* login shell
+  ([e345f74](https://github.com/drew-simmons/skrvm/commit/e345f74beeeeb77a671ec91ef799c359dea903a1))
 
 ## [0.4.0](https://github.com/drew-simmons/skrvm/compare/v0.3.0...v0.4.0) (2026-05-31)
 
