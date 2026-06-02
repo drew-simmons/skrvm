@@ -1290,4 +1290,255 @@ mod tests {
         // Clean up
         std::fs::remove_dir_all(&temp_dir).ok();
     }
+
+    #[test]
+    fn test_metrics_jsonrpc_success() {
+        let orch = make_test_orchestrator();
+        let issue_id = "test-issue-jsonrpc".to_string();
+        let identifier = "PROJ-101".to_string();
+
+        let issue = Issue {
+            id: issue_id.clone(),
+            identifier: identifier.clone(),
+            title: "Test ticket JSON-RPC".to_string(),
+            description: None,
+            priority: None,
+            state: "Todo".to_string(),
+            branch_name: None,
+            url: None,
+            assignee_id: None,
+            blocked_by: vec![],
+            labels: vec![],
+            assigned_to_worker: true,
+            created_at: None,
+            updated_at: None,
+        };
+
+        // 1. Simulate claiming and starting execution
+        {
+            let mut state = orch.state.write().unwrap();
+            state.claimed.insert(issue_id.clone());
+            state.running.insert(
+                issue_id.clone(),
+                RunningEntry {
+                    pid: Some(12345),
+                    identifier: identifier.clone(),
+                    issue: issue.clone(),
+                    worker_host: None,
+                    workspace_path: None,
+                    session_id: Some("session-jsonrpc".to_string()),
+                    last_event: None,
+                    last_message: None,
+                    last_event_at: None,
+                    input_tokens: 0,
+                    output_tokens: 0,
+                    total_tokens: 0,
+                    turn_count: 0,
+                    retry_attempt: 0,
+                    started_at: chrono::Utc::now().to_rfc3339(),
+                },
+            );
+        }
+
+        // Verify metrics at start
+        {
+            let state = orch.state.read().unwrap();
+            assert_eq!(state.running.len(), 1); // ACTIVE WORKERS = 1
+            assert_eq!(state.claimed.len(), 1); // CLAIMS IN QUEUE = 1
+            assert_eq!(state.blocked.len(), 0); // BLOCKED HANDOFFS = 0
+            assert_eq!(state.codex_totals.total_tokens, 0); // TOTAL TOKENS CONSUMED = 0
+        }
+
+        // 2. Simulate streaming turn completions and updating token counts
+        let mock_delta = crate::agent_runner::TokenDelta {
+            input_tokens: 150,
+            output_tokens: 50,
+            total_tokens: 200,
+        };
+
+        {
+            let mut state = orch.state.write().unwrap();
+            if let Some(entry) = state.running.get_mut(&issue_id) {
+                entry.input_tokens = mock_delta.input_tokens;
+                entry.output_tokens = mock_delta.output_tokens;
+                entry.total_tokens = mock_delta.total_tokens;
+                entry.turn_count = 1;
+            }
+        }
+
+        // 3. Simulate completion (runner exits Ok)
+        {
+            let mut state = orch.state.write().unwrap();
+            state.running.remove(&issue_id);
+            state.claimed.remove(&issue_id);
+            state.completed.insert(issue_id.clone());
+
+            // Accumulate tokens (equivalent to dispatch_issue completion block)
+            state.codex_totals.input_tokens += mock_delta.input_tokens;
+            state.codex_totals.output_tokens += mock_delta.output_tokens;
+            state.codex_totals.total_tokens += mock_delta.total_tokens;
+        }
+
+        // Verify metrics at complete
+        {
+            let state = orch.state.read().unwrap();
+            assert_eq!(state.running.len(), 0); // ACTIVE WORKERS = 0
+            assert_eq!(state.claimed.len(), 0); // CLAIMS IN QUEUE = 0
+            assert_eq!(state.blocked.len(), 0); // BLOCKED HANDOFFS = 0
+            assert_eq!(state.codex_totals.total_tokens, 200); // TOTAL TOKENS CONSUMED = 200
+            assert!(state.completed.contains(&issue_id));
+        }
+    }
+
+    #[test]
+    fn test_metrics_oneshot_success() {
+        let orch = make_test_orchestrator();
+        let issue_id = "test-issue-oneshot".to_string();
+        let identifier = "PROJ-102".to_string();
+
+        let issue = Issue {
+            id: issue_id.clone(),
+            identifier: identifier.clone(),
+            title: "Test ticket One-shot".to_string(),
+            description: None,
+            priority: None,
+            state: "Todo".to_string(),
+            branch_name: None,
+            url: None,
+            assignee_id: None,
+            blocked_by: vec![],
+            labels: vec![],
+            assigned_to_worker: true,
+            created_at: None,
+            updated_at: None,
+        };
+
+        // 1. Simulate claiming and starting execution
+        {
+            let mut state = orch.state.write().unwrap();
+            state.claimed.insert(issue_id.clone());
+            state.running.insert(
+                issue_id.clone(),
+                RunningEntry {
+                    pid: Some(12346),
+                    identifier: identifier.clone(),
+                    issue: issue.clone(),
+                    worker_host: None,
+                    workspace_path: None,
+                    session_id: Some("session-oneshot".to_string()),
+                    last_event: None,
+                    last_message: None,
+                    last_event_at: None,
+                    input_tokens: 0,
+                    output_tokens: 0,
+                    total_tokens: 0,
+                    turn_count: 1,
+                    retry_attempt: 0,
+                    started_at: chrono::Utc::now().to_rfc3339(),
+                },
+            );
+        }
+
+        // Verify metrics at start
+        {
+            let state = orch.state.read().unwrap();
+            assert_eq!(state.running.len(), 1); // ACTIVE WORKERS = 1
+            assert_eq!(state.claimed.len(), 1); // CLAIMS IN QUEUE = 1
+            assert_eq!(state.codex_totals.total_tokens, 0); // TOTAL TOKENS CONSUMED = 0
+        }
+
+        // 2. Simulate completion (runner exits Ok - oneshot does not send token updates)
+        {
+            let mut state = orch.state.write().unwrap();
+            state.running.remove(&issue_id);
+            state.claimed.remove(&issue_id);
+            state.completed.insert(issue_id.clone());
+        }
+
+        // Verify metrics at complete
+        {
+            let state = orch.state.read().unwrap();
+            assert_eq!(state.running.len(), 0); // ACTIVE WORKERS = 0
+            assert_eq!(state.claimed.len(), 0); // CLAIMS IN QUEUE = 0
+            assert_eq!(state.codex_totals.total_tokens, 0); // TOTAL TOKENS CONSUMED = 0
+            assert!(state.completed.contains(&issue_id));
+        }
+    }
+
+    #[test]
+    fn test_metrics_blocked_handoff() {
+        let orch = make_test_orchestrator();
+        let issue_id = "test-issue-blocked".to_string();
+        let identifier = "PROJ-103".to_string();
+
+        let issue = Issue {
+            id: issue_id.clone(),
+            identifier: identifier.clone(),
+            title: "Test ticket Blocked".to_string(),
+            description: None,
+            priority: None,
+            state: "Todo".to_string(),
+            branch_name: None,
+            url: None,
+            assignee_id: None,
+            blocked_by: vec![],
+            labels: vec![],
+            assigned_to_worker: true,
+            created_at: None,
+            updated_at: None,
+        };
+
+        // 1. Simulate claiming and starting execution
+        {
+            let mut state = orch.state.write().unwrap();
+            state.claimed.insert(issue_id.clone());
+            state.running.insert(
+                issue_id.clone(),
+                RunningEntry {
+                    pid: Some(12347),
+                    identifier: identifier.clone(),
+                    issue: issue.clone(),
+                    worker_host: None,
+                    workspace_path: None,
+                    session_id: Some("session-blocked".to_string()),
+                    last_event: None,
+                    last_message: None,
+                    last_event_at: None,
+                    input_tokens: 0,
+                    output_tokens: 0,
+                    total_tokens: 0,
+                    turn_count: 1,
+                    retry_attempt: 0,
+                    started_at: chrono::Utc::now().to_rfc3339(),
+                },
+            );
+        }
+
+        // 2. Simulate runner blocking on manual operator input (was_blocked is true)
+        {
+            let mut state = orch.state.write().unwrap();
+            state.running.remove(&issue_id);
+
+            // Relocate to blocked map
+            state.blocked.insert(
+                issue_id.clone(),
+                BlockedEntry {
+                    issue_id: issue_id.clone(),
+                    identifier: identifier.clone(),
+                    issue: issue.clone(),
+                    session_id: Some("session-blocked".to_string()),
+                    error: "Operator manual input required".to_string(),
+                    blocked_at: chrono::Utc::now().to_rfc3339(),
+                },
+            );
+        }
+
+        // Verify metrics at blocked state
+        {
+            let state = orch.state.read().unwrap();
+            assert_eq!(state.running.len(), 0); // ACTIVE WORKERS = 0 (worker exits/pauses)
+            assert_eq!(state.claimed.len(), 1); // CLAIMS IN QUEUE = 1 (remains locked/claimed)
+            assert_eq!(state.blocked.len(), 1); // BLOCKED HANDOFFS = 1 (indicates action required)
+        }
+    }
 }
