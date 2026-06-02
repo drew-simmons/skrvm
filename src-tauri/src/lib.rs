@@ -373,7 +373,10 @@ pub fn run() {
             save_workflow,
             get_current_workflow,
             get_session_histories,
-            get_session_transcript
+            get_session_transcript,
+            orchestrator::get_sdd_state,
+            orchestrator::save_sdd_state,
+            orchestrator::trigger_sdd_step
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

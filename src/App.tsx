@@ -247,6 +247,182 @@ orchestrator to resolve GitHub Issue **#{{ issue.identifier }}**.
   // Tab switching state
   const [activeTab, setActiveTab] = useState<"kanban" | "history">("kanban");
 
+  // SDD states
+  interface SddTask {
+    id: string;
+    text: string;
+    status: "todo" | "in_progress" | "completed";
+    dependencies: string[];
+  }
+
+  interface Scorecard {
+    passed: boolean;
+    score: number;
+    feedback: string;
+  }
+
+  interface SddState {
+    current_stage: "triage" | "requirements" | "design" | "tasks" | "execution" | "done";
+    is_sdd: boolean;
+    drafts: Record<string, string>;
+    reviews: Record<string, Scorecard>;
+    approvals: Record<string, boolean>;
+    tasks: SddTask[];
+  }
+
+  const [sddState, setSddState] = useState<SddState | null>(null);
+  const [activeSddTab, setActiveSddTab] = useState<
+    "triage" | "requirements" | "design" | "tasks" | "execution"
+  >("triage");
+  const [editingDraftText, setEditingDraftText] = useState<string>("");
+
+  const fetchSddState = async (issueId: string) => {
+    if (!orchState) return;
+
+    let wsPath: string | null = null;
+    const running = Object.values(orchState.running).find((r) => r.issue.id === issueId);
+    if (running && running.workspace_path) {
+      wsPath = running.workspace_path;
+    } else {
+      const cached = issueCache[issueId];
+      if (cached) {
+        const sanitizedKey =
+          `${cached.identifier.toLowerCase().replace(/[^a-z0-9]/g, "-")}-${cached.title.toLowerCase().replace(/[^a-z0-9]/g, "-")}`.slice(
+            0,
+            50,
+          );
+        const workflow = await invoke<any>("get_current_workflow");
+        if (workflow && workflow.settings && workflow.settings.workspace) {
+          const root = workflow.settings.workspace.root;
+          wsPath = `${root}/${sanitizedKey}`;
+        }
+      }
+    }
+
+    if (!wsPath) return;
+
+    try {
+      const state: SddState | null = await invoke("get_sdd_state", { workspacePath: wsPath });
+      setSddState(state);
+    } catch (e) {
+      console.error("Failed to fetch SDD state:", e);
+    }
+  };
+
+  const handleTriggerSddStep = async (stepName: string) => {
+    if (!selectedIssueId || !orchState) return;
+
+    let wsPath: string | null = null;
+    const running = Object.values(orchState.running).find((r) => r.issue.id === selectedIssueId);
+    if (running && running.workspace_path) {
+      wsPath = running.workspace_path;
+    } else {
+      const cached = issueCache[selectedIssueId];
+      if (cached) {
+        const sanitizedKey =
+          `${cached.identifier.toLowerCase().replace(/[^a-z0-9]/g, "-")}-${cached.title.toLowerCase().replace(/[^a-z0-9]/g, "-")}`.slice(
+            0,
+            50,
+          );
+        const workflow = await invoke<any>("get_current_workflow");
+        if (workflow && workflow.settings && workflow.settings.workspace) {
+          const root = workflow.settings.workspace.root;
+          wsPath = `${root}/${sanitizedKey}`;
+        }
+      }
+    }
+
+    if (!wsPath) {
+      alert("Could not determine workspace path for this issue.");
+      return;
+    }
+
+    const cached = issueCache[selectedIssueId];
+    const issueTitle = cached?.title || "Issue";
+    const issueDescription = cached?.description || "Description";
+
+    try {
+      const state: SddState = await invoke("trigger_sdd_step", {
+        workspacePath: wsPath,
+        stepName,
+        issueTitle,
+        issueDescription,
+      });
+      setSddState(state);
+      if (stepName === "triage") {
+        setActiveSddTab("triage");
+      } else if (stepName === "requirements") {
+        setActiveSddTab("requirements");
+        setEditingDraftText(state.drafts["requirements"] || "");
+      } else if (stepName === "design") {
+        setActiveSddTab("design");
+        setEditingDraftText(state.drafts["design"] || "");
+      } else if (stepName === "tasks") {
+        setActiveSddTab("tasks");
+        setEditingDraftText(state.drafts["tasks"] || "");
+      } else if (stepName === "execute") {
+        setActiveSddTab("execution");
+      }
+      fetchState();
+    } catch (e) {
+      alert(`Failed to trigger SDD step: ${e}`);
+    }
+  };
+
+  const handleSaveSddDraft = async (stage: string, content: string) => {
+    if (!selectedIssueId || !sddState || !orchState) return;
+
+    let wsPath: string | null = null;
+    const running = Object.values(orchState.running).find((r) => r.issue.id === selectedIssueId);
+    if (running && running.workspace_path) {
+      wsPath = running.workspace_path;
+    } else {
+      const cached = issueCache[selectedIssueId];
+      if (cached) {
+        const sanitizedKey =
+          `${cached.identifier.toLowerCase().replace(/[^a-z0-9]/g, "-")}-${cached.title.toLowerCase().replace(/[^a-z0-9]/g, "-")}`.slice(
+            0,
+            50,
+          );
+        const workflow = await invoke<any>("get_current_workflow");
+        if (workflow && workflow.settings && workflow.settings.workspace) {
+          const root = workflow.settings.workspace.root;
+          wsPath = `${root}/${sanitizedKey}`;
+        }
+      }
+    }
+
+    if (!wsPath) return;
+
+    const newState = {
+      ...sddState,
+      drafts: {
+        ...sddState.drafts,
+        [stage]: content,
+      },
+    };
+
+    try {
+      await invoke("save_sdd_state", { workspacePath: wsPath, state: newState });
+      setSddState(newState);
+    } catch (e) {
+      alert(`Failed to save draft: ${e}`);
+    }
+  };
+
+  // Sync SDD state periodically when selectedIssueId changes
+  useEffect(() => {
+    if (selectedIssueId) {
+      fetchSddState(selectedIssueId);
+      const sddInterval = setInterval(() => {
+        fetchSddState(selectedIssueId);
+      }, 1500);
+      return () => clearInterval(sddInterval);
+    } else {
+      setSddState(null);
+    }
+  }, [selectedIssueId]);
+
   // History states
   const [histories, setHistories] = useState<any[]>([]);
   const [isLoadingHistories, setIsLoadingHistories] = useState<boolean>(false);
@@ -1514,6 +1690,399 @@ orchestrator to resolve GitHub Issue **#{{ issue.identifier }}**.
                 {selectedDetails.data?.description && (
                   <div className="ticket-description">
                     {parseMarkdownToReact(selectedDetails.data.description)}
+                  </div>
+                )}
+              </div>
+
+              {/* SDD Workflow Wizard */}
+              <div style={{ marginTop: "1rem", marginBottom: "1rem" }}>
+                <div
+                  className="detail-section-title"
+                  style={{
+                    display: "flex",
+                    justifyContent: "space-between",
+                    alignItems: "center",
+                    borderBottom: "1px solid rgba(255, 255, 255, 0.08)",
+                    paddingBottom: "4px",
+                    marginBottom: "8px",
+                  }}
+                >
+                  <span>Spec-Driven Development (SDD)</span>
+                  {!sddState && (
+                    <button
+                      className="btn-premium"
+                      style={{ fontSize: "0.7rem", padding: "0.2rem 0.5rem" }}
+                      onClick={() => handleTriggerSddStep("triage")}
+                    >
+                      Enable SDD Workflow
+                    </button>
+                  )}
+                </div>
+
+                {sddState ? (
+                  <div className="sdd-wizard">
+                    <div
+                      className="sdd-wizard-tabs"
+                      style={{
+                        display: "flex",
+                        gap: "4px",
+                        marginBottom: "8px",
+                        overflowX: "auto",
+                        paddingBottom: "4px",
+                      }}
+                    >
+                      <button
+                        className={`btn-tab ${activeSddTab === "triage" ? "active" : ""}`}
+                        style={{ fontSize: "0.7rem", padding: "4px 8px" }}
+                        onClick={() => setActiveSddTab("triage")}
+                      >
+                        1. Triage
+                      </button>
+                      <button
+                        className={`btn-tab ${activeSddTab === "requirements" ? "active" : ""}`}
+                        style={{ fontSize: "0.7rem", padding: "4px 8px" }}
+                        onClick={() => {
+                          setActiveSddTab("requirements");
+                          setEditingDraftText(sddState.drafts["requirements"] || "");
+                        }}
+                      >
+                        2. Requirements
+                      </button>
+                      <button
+                        className={`btn-tab ${activeSddTab === "design" ? "active" : ""}`}
+                        style={{ fontSize: "0.7rem", padding: "4px 8px" }}
+                        onClick={() => {
+                          setActiveSddTab("design");
+                          setEditingDraftText(sddState.drafts["design"] || "");
+                        }}
+                      >
+                        3. Design
+                      </button>
+                      <button
+                        className={`btn-tab ${activeSddTab === "tasks" ? "active" : ""}`}
+                        style={{ fontSize: "0.7rem", padding: "4px 8px" }}
+                        onClick={() => {
+                          setActiveSddTab("tasks");
+                          setEditingDraftText(sddState.drafts["tasks"] || "");
+                        }}
+                      >
+                        4. Tasks
+                      </button>
+                      <button
+                        className={`btn-tab ${activeSddTab === "execution" ? "active" : ""}`}
+                        style={{ fontSize: "0.7rem", padding: "4px 8px" }}
+                        onClick={() => setActiveSddTab("execution")}
+                      >
+                        5. Execution
+                      </button>
+                    </div>
+
+                    <div
+                      className="sdd-wizard-content"
+                      style={{
+                        background: "rgba(255, 255, 255, 0.02)",
+                        padding: "10px",
+                        borderRadius: "6px",
+                        border: "1px solid rgba(255, 255, 255, 0.05)",
+                      }}
+                    >
+                      {activeSddTab === "triage" && (
+                        <div>
+                          <div style={{ fontSize: "0.8rem", marginBottom: "8px" }}>
+                            <strong>Triage Recommendation:</strong>{" "}
+                            {sddState.is_sdd ? (
+                              <span
+                                style={{
+                                  color: "var(--color-primary)",
+                                  textShadow: "0 0 8px rgba(0, 240, 255, 0.3)",
+                                }}
+                              >
+                                Complex issue, SDD Recommended
+                              </span>
+                            ) : (
+                              <span style={{ color: "var(--color-zinc-400)" }}>
+                                Simple issue, Standard Flow Recommended
+                              </span>
+                            )}
+                          </div>
+                          <div style={{ display: "flex", gap: "8px" }}>
+                            <button
+                              className="btn-premium"
+                              onClick={async () => {
+                                const newState = { ...sddState, is_sdd: !sddState.is_sdd };
+                                let wsPath: string | null = null;
+                                const running = orchState
+                                  ? Object.values(orchState.running).find(
+                                      (r) => r.issue.id === selectedIssueId,
+                                    )
+                                  : undefined;
+                                if (running && running.workspace_path) {
+                                  wsPath = running.workspace_path;
+                                } else {
+                                  const cached = issueCache[selectedIssueId || ""];
+                                  if (cached) {
+                                    const sanitizedKey =
+                                      `${cached.identifier.toLowerCase().replace(/[^a-z0-9]/g, "-")}-${cached.title.toLowerCase().replace(/[^a-z0-9]/g, "-")}`.slice(
+                                        0,
+                                        50,
+                                      );
+                                    const workflow = await invoke<any>("get_current_workflow");
+                                    if (
+                                      workflow &&
+                                      workflow.settings &&
+                                      workflow.settings.workspace
+                                    ) {
+                                      const root = workflow.settings.workspace.root;
+                                      wsPath = `${root}/${sanitizedKey}`;
+                                    }
+                                  }
+                                }
+                                if (wsPath) {
+                                  await invoke("save_sdd_state", {
+                                    workspacePath: wsPath,
+                                    state: newState,
+                                  });
+                                  setSddState(newState);
+                                }
+                              }}
+                            >
+                              Toggle SDD: {sddState.is_sdd ? "Disable" : "Enable"}
+                            </button>
+                            <button
+                              className="btn-premium"
+                              style={{
+                                background: "var(--color-primary)",
+                                borderColor: "var(--color-primary)",
+                                color: "var(--bg-primary)",
+                                fontWeight: 600,
+                              }}
+                              onClick={() => handleTriggerSddStep("requirements")}
+                            >
+                              Proceed to Requirements
+                            </button>
+                          </div>
+                        </div>
+                      )}
+
+                      {(activeSddTab === "requirements" ||
+                        activeSddTab === "design" ||
+                        activeSddTab === "tasks") && (
+                        <div>
+                          <div
+                            style={{
+                              display: "flex",
+                              justifyContent: "space-between",
+                              marginBottom: "8px",
+                              alignItems: "center",
+                            }}
+                          >
+                            <span style={{ fontSize: "0.8rem", fontWeight: 600 }}>
+                              Draft {activeSddTab}.md
+                            </span>
+                            <button
+                              className="btn-premium"
+                              style={{ fontSize: "0.65rem", padding: "2px 6px" }}
+                              onClick={() => handleSaveSddDraft(activeSddTab, editingDraftText)}
+                            >
+                              Save Draft
+                            </button>
+                          </div>
+                          <textarea
+                            style={{
+                              width: "100%",
+                              background: "rgba(0, 0, 0, 0.2)",
+                              color: "#c9c9c9",
+                              border: "1px solid rgba(255, 255, 255, 0.1)",
+                              borderRadius: "4px",
+                              fontFamily: "monospace",
+                              fontSize: "0.75rem",
+                              padding: "8px",
+                              minHeight: "120px",
+                              resize: "vertical",
+                            }}
+                            value={editingDraftText}
+                            onChange={(e) => setEditingDraftText(e.target.value)}
+                          />
+
+                          {sddState.reviews[activeSddTab] && (
+                            <div
+                              className="scorecard-box"
+                              style={{
+                                marginTop: "10px",
+                                padding: "8px",
+                                background: "rgba(255, 255, 255, 0.03)",
+                                borderRadius: "4px",
+                                borderLeft: "3px solid var(--color-primary)",
+                              }}
+                            >
+                              <div
+                                style={{
+                                  display: "flex",
+                                  justifyContent: "space-between",
+                                  marginBottom: "4px",
+                                }}
+                              >
+                                <span style={{ fontSize: "0.75rem", fontWeight: 600 }}>
+                                  Subagent Scorecard
+                                </span>
+                                <span
+                                  className="macos-badge"
+                                  style={{
+                                    background: sddState.reviews[activeSddTab].passed
+                                      ? "rgba(16, 185, 129, 0.15)"
+                                      : "rgba(239, 68, 68, 0.15)",
+                                    color: sddState.reviews[activeSddTab].passed
+                                      ? "var(--color-emerald)"
+                                      : "var(--color-red)",
+                                  }}
+                                >
+                                  Score: {sddState.reviews[activeSddTab].score}/100 (
+                                  {sddState.reviews[activeSddTab].passed ? "Passed" : "Failed"})
+                                </span>
+                              </div>
+                              <div
+                                style={{
+                                  fontSize: "0.7rem",
+                                  color: "var(--color-text-muted)",
+                                  fontStyle: "italic",
+                                }}
+                              >
+                                {sddState.reviews[activeSddTab].feedback}
+                              </div>
+                            </div>
+                          )}
+
+                          <div style={{ marginTop: "10px", display: "flex", gap: "8px" }}>
+                            <button
+                              className="btn-premium"
+                              style={{
+                                background: "var(--color-primary)",
+                                borderColor: "var(--color-primary)",
+                                color: "var(--bg-primary)",
+                                fontWeight: 600,
+                              }}
+                              onClick={() => {
+                                const nextTab =
+                                  activeSddTab === "requirements"
+                                    ? "design"
+                                    : activeSddTab === "design"
+                                      ? "tasks"
+                                      : "execute";
+                                handleTriggerSddStep(nextTab);
+                              }}
+                            >
+                              Approve & Proceed
+                            </button>
+                          </div>
+                        </div>
+                      )}
+
+                      {activeSddTab === "execution" && (
+                        <div>
+                          <div style={{ fontSize: "0.8rem", fontWeight: 600, marginBottom: "8px" }}>
+                            Task Execution DAG Checklist
+                          </div>
+                          <div
+                            className="task-dag-container"
+                            style={{ display: "flex", flexDirection: "column", gap: "8px" }}
+                          >
+                            {sddState.tasks.map((task) => {
+                              const statusColor =
+                                task.status === "completed"
+                                  ? "var(--color-emerald)"
+                                  : task.status === "in_progress"
+                                    ? "var(--color-primary)"
+                                    : "var(--color-zinc-400)";
+                              return (
+                                <div
+                                  key={task.id}
+                                  className="task-node"
+                                  style={{
+                                    display: "flex",
+                                    alignItems: "center",
+                                    justifyItems: "center",
+                                    justifyContent: "space-between",
+                                    padding: "6px 10px",
+                                    background: "rgba(0, 0, 0, 0.15)",
+                                    border: "1px solid rgba(255, 255, 255, 0.05)",
+                                    borderRadius: "4px",
+                                  }}
+                                >
+                                  <div
+                                    style={{ display: "flex", alignItems: "center", gap: "8px" }}
+                                  >
+                                    <div
+                                      className={`status-dot ${task.status}`}
+                                      style={{
+                                        width: "8px",
+                                        height: "8px",
+                                        borderRadius: "50%",
+                                        background: statusColor,
+                                      }}
+                                    ></div>
+                                    <span
+                                      style={{
+                                        fontSize: "0.75rem",
+                                        color:
+                                          task.status === "completed"
+                                            ? "var(--color-text-muted)"
+                                            : "var(--color-text-main)",
+                                        textDecoration:
+                                          task.status === "completed" ? "line-through" : "none",
+                                      }}
+                                    >
+                                      {task.text}
+                                    </span>
+                                  </div>
+                                  <span
+                                    style={{
+                                      fontSize: "0.65rem",
+                                      textTransform: "uppercase",
+                                      color: statusColor,
+                                      fontWeight: task.status === "in_progress" ? 600 : 400,
+                                    }}
+                                  >
+                                    {task.status}
+                                  </span>
+                                </div>
+                              );
+                            })}
+                          </div>
+                          {sddState.current_stage !== "execution" &&
+                            sddState.current_stage !== "done" && (
+                              <button
+                                className="btn-premium"
+                                style={{
+                                  width: "100%",
+                                  marginTop: "12px",
+                                  background: "var(--color-primary)",
+                                  borderColor: "var(--color-primary)",
+                                  color: "var(--bg-primary)",
+                                  fontWeight: 600,
+                                }}
+                                onClick={() => handleTriggerSddStep("execute")}
+                              >
+                                Launch SDD Execution DAG
+                              </button>
+                            )}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                ) : (
+                  <div
+                    style={{
+                      fontSize: "0.75rem",
+                      color: "var(--color-text-muted)",
+                      fontStyle: "italic",
+                      padding: "0.5rem",
+                      background: "rgba(255, 255, 255, 0.01)",
+                      border: "1px dashed rgba(255, 255, 255, 0.05)",
+                      borderRadius: "4px",
+                    }}
+                  >
+                    SDD is not enabled for this issue. Use the button above to enable the structured
+                    Spec-Driven Development workflow.
                   </div>
                 )}
               </div>
