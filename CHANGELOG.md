@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.1](https://github.com/drew-simmons/skrvm/compare/v0.6.0...v0.6.1) (2026-06-02)
+
+
+### Bug Fixes
+
+* docs deploy ([346213b](https://github.com/drew-simmons/skrvm/commit/346213b52d4aaded0ffd38dbbf9d434c853518bf))
+
 ## [0.6.0](https://github.com/drew-simmons/skrvm/compare/v0.5.0...v0.6.0) (2026-06-02)
 
 
