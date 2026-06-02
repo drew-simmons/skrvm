@@ -1,0 +1,117 @@
+/* Skrvm Sleek Dark Mode Theme Overrides for Starlight */
+@import url("https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap");
+
+:root {
+  /* Fonts */
+  --sl-font-sans: "Geist", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --sl-font-mono: "JetBrains Mono", monospace;
+
+  /* Shadcn-inspired Premium Zinc Palette */
+  --sl-color-bg: #09090b; /* Zinc 950 */
+  --sl-color-bg-nav: #09090b;
+  --sl-color-bg-sidebar: #09090b;
+  --sl-color-bg-inline-code: #18181b; /* Zinc 900 */
+
+  /* Text Colors */
+  --sl-color-white: #fafafa;
+  --sl-color-gray-1: #fafafa;
+  --sl-color-gray-2: #fafafa;
+  --sl-color-gray-3: #a1a1aa; /* Zinc 400 */
+  --sl-color-gray-4: #52525b; /* Zinc 600 */
+  --sl-color-gray-5: #27272a; /* Zinc 800 */
+  --sl-color-gray-6: #18181b; /* Zinc 900 */
+  --sl-color-black: #020202;
+
+  /* Accent (Cyan & Purple) */
+  --sl-color-accent: #06b6d4; /* Cyan 500 */
+  --sl-color-accent-high: #22d3ee; /* Cyan 400 */
+  --sl-color-accent-low: #083344; /* Cyan 900 */
+
+  /* Shadows and Borders */
+  --sl-color-hairline: #27272a; /* Zinc 800 */
+  --sl-color-hairline-light: #27272a;
+}
+
+/* Force Dark Mode Styling */
+:root[data-theme='light'] {
+  --sl-color-bg: #09090b;
+  --sl-color-white: #fafafa;
+  --sl-color-gray-1: #fafafa;
+  --sl-color-gray-2: #fafafa;
+  --sl-color-gray-3: #a1a1aa;
+  --sl-color-gray-4: #52525b;
+  --sl-color-gray-5: #27272a;
+  --sl-color-gray-6: #18181b;
+  --sl-color-black: #020202;
+  --sl-color-accent: #06b6d4;
+  --sl-color-accent-high: #22d3ee;
+  --sl-color-accent-low: #083344;
+  --sl-color-hairline: #27272a;
+}
+
+/* Premium Gradient for Header and Hero Elements */
+.hero {
+  background-image:
+    radial-gradient(at 0% 0%, rgba(168, 85, 247, 0.08) 0px, transparent 40%),
+    radial-gradient(at 100% 100%, rgba(6, 182, 212, 0.06) 0px, transparent 40%);
+}
+
+.hero h1 {
+  background: linear-gradient(135deg, #fafafa 30%, #a855f7 60%, #06b6d4 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+  letter-spacing: -1px;
+}
+
+/* Custom Scrollbars to match Dashboard */
+::-webkit-scrollbar {
+  width: 4px;
+  height: 4px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--sl-color-hairline);
+  border-radius: 2px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--sl-color-gray-4);
+}
+
+/* Fine-tune Heading Accents */
+h1, h2, h3, h4, h5, h6 {
+  letter-spacing: -0.3px;
+  color: var(--sl-color-white) !important;
+}
+
+/* Premium Sidebar Hover Transitions */
+.sidebar-content a {
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  border-radius: 4px;
+  padding: 0.35rem 0.6rem !important;
+}
+
+.sidebar-content a:hover {
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--sl-color-accent) !important;
+}
+
+.sidebar-content a[aria-current="page"] {
+  background: rgba(6, 182, 212, 0.06) !important;
+  color: var(--sl-color-accent-high) !important;
+  border-left: 2px solid var(--sl-color-accent);
+}
+
+/* Badge styling to match vintage macOS badges or premium labels */
+.badge {
+  background-color: #27272a;
+  color: #a855f7;
+  border: 1px solid rgba(168, 85, 247, 0.2);
+  font-family: var(--sl-font-mono);
+  font-size: 0.7rem;
+}
