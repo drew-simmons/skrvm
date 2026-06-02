@@ -184,6 +184,10 @@ pub async fn fetch_candidate_issues(config: &Settings) -> Result<Vec<Issue>, Str
         return fetch_candidate_issues_github(config).await;
     }
 
+    if config.tracker.kind == "gitlab" {
+        return fetch_candidate_issues_gitlab(config).await;
+    }
+
     let client = reqwest::Client::new();
     let api_key = config
         .tracker
@@ -360,6 +364,10 @@ pub async fn fetch_issue_states_by_ids(
         return fetch_issue_states_by_ids_github(config, ids).await;
     }
 
+    if config.tracker.kind == "gitlab" {
+        return fetch_issue_states_by_ids_gitlab(config, ids).await;
+    }
+
     let client = reqwest::Client::new();
     let api_key = config
         .tracker
@@ -485,6 +493,10 @@ pub async fn fetch_issues_by_states(
 
     if config.tracker.kind == "github" {
         return fetch_issues_by_states_github(config, state_names).await;
+    }
+
+    if config.tracker.kind == "gitlab" {
+        return fetch_issues_by_states_gitlab(config, state_names).await;
     }
 
     let client = reqwest::Client::new();
@@ -1436,6 +1448,276 @@ fn slugify(text: &str) -> String {
     trimmed.trim_matches('-').to_string()
 }
 
+// ==========================================
+// GitLab Issues Integration Support
+// ==========================================
+
+#[allow(dead_code)]
+#[derive(Deserialize, Debug)]
+struct GitLabIssue {
+    id: i64,
+    iid: i64,
+    title: String,
+    description: Option<String>,
+    state: String,
+    web_url: String,
+    assignee: Option<GitLabUser>,
+    labels: Option<Vec<String>>,
+    created_at: String,
+    updated_at: String,
+}
+
+#[derive(Deserialize, Debug)]
+struct GitLabUser {
+    username: String,
+}
+
+fn normalize_gitlab_issue(node: GitLabIssue, config: &Settings) -> Issue {
+    let mut resolved_state = None;
+
+    let labels: Vec<String> = node.labels.unwrap_or_default();
+
+    // GitLab's closed state is authoritative. Labels can be stale after merge.
+    if node.state.to_lowercase() == "closed" {
+        resolved_state = config.tracker.terminal_states.first().cloned();
+    } else {
+        for label in &labels {
+            if config
+                .tracker
+                .terminal_states
+                .iter()
+                .any(|s| s.to_lowercase() == label.to_lowercase())
+            {
+                resolved_state = config
+                    .tracker
+                    .terminal_states
+                    .iter()
+                    .find(|s| s.to_lowercase() == label.to_lowercase())
+                    .cloned();
+                break;
+            }
+        }
+    }
+
+    // Then check active labels for still-open issues.
+    if resolved_state.is_none() {
+        for label in &labels {
+            if config
+                .tracker
+                .active_states
+                .iter()
+                .any(|s| s.to_lowercase() == label.to_lowercase())
+            {
+                resolved_state = config
+                    .tracker
+                    .active_states
+                    .iter()
+                    .find(|s| s.to_lowercase() == label.to_lowercase())
+                    .cloned();
+                break;
+            }
+        }
+    }
+
+    // Default based on GitLab's native opened/closed state
+    let state = resolved_state.unwrap_or_else(|| {
+        if node.state.to_lowercase() == "closed" {
+            config
+                .tracker
+                .terminal_states
+                .first()
+                .cloned()
+                .unwrap_or_else(|| "Done".to_string())
+        } else {
+            config
+                .tracker
+                .active_states
+                .first()
+                .cloned()
+                .unwrap_or_else(|| "Todo".to_string())
+        }
+    });
+
+    let assignee_id = node.assignee.map(|a| a.username);
+    let assigned_to_worker = match (config.tracker.assignee.as_deref(), assignee_id.as_deref()) {
+        (Some(filter), Some(id)) => filter.to_lowercase() == id.to_lowercase(),
+        (Some(_), None) => false,
+        _ => true,
+    };
+
+    let branch_slug = slugify(&node.title);
+    let branch_name = if branch_slug.is_empty() {
+        format!("feature/issue-{}", node.iid)
+    } else {
+        format!("feature/issue-{}-{}", node.iid, branch_slug)
+    };
+
+    Issue {
+        id: node.iid.to_string(),
+        identifier: node.iid.to_string(),
+        title: node.title,
+        description: node.description,
+        priority: None,
+        state,
+        branch_name: Some(branch_name),
+        url: Some(node.web_url),
+        assignee_id,
+        blocked_by: vec![],
+        labels,
+        assigned_to_worker,
+        created_at: Some(node.created_at),
+        updated_at: Some(node.updated_at),
+    }
+}
+
+async fn fetch_candidate_issues_gitlab(config: &Settings) -> Result<Vec<Issue>, String> {
+    let client = reqwest::Client::new();
+    let api_key = config
+        .tracker
+        .api_key
+        .as_deref()
+        .ok_or("GitLab API token is missing")?;
+
+    let mut all_issues = Vec::new();
+    let mut page = 1;
+
+    let project_slug_encoded = config.tracker.project_slug.replace('/', "%2F");
+
+    loop {
+        let url = format!(
+            "{}/api/v4/projects/{}/issues?per_page=50&page={}",
+            config.tracker.endpoint.trim_end_matches('/'),
+            project_slug_encoded,
+            page
+        );
+
+        let trimmed = api_key.trim();
+        let mut req = client.get(&url).header("User-Agent", "skrvm");
+        if trimmed.starts_with("Bearer ") {
+            req = req.header("Authorization", trimmed);
+        } else {
+            req = req.header("PRIVATE-TOKEN", trimmed);
+        }
+
+        let res = req
+            .send()
+            .await
+            .map_err(|e| format!("GitLab API request failed: {}", e))?;
+
+        if !res.status().is_success() {
+            return Err(format!(
+                "GitLab Issues API failed with status: {}",
+                res.status()
+            ));
+        }
+
+        let nodes: Vec<GitLabIssue> = res
+            .json()
+            .await
+            .map_err(|e| format!("Failed to parse GitLab response: {}", e))?;
+
+        let count = nodes.len();
+        if count == 0 {
+            break;
+        }
+
+        for node in nodes {
+            let normalized = normalize_gitlab_issue(node, config);
+            if config
+                .tracker
+                .active_states
+                .iter()
+                .any(|s| s.to_lowercase() == normalized.state.to_lowercase())
+            {
+                all_issues.push(normalized);
+            }
+        }
+
+        page += 1;
+    }
+
+    Ok(all_issues)
+}
+
+async fn fetch_issue_states_by_ids_gitlab(
+    config: &Settings,
+    ids: &[String],
+) -> Result<Vec<Issue>, String> {
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let client = reqwest::Client::new();
+    let api_key = config
+        .tracker
+        .api_key
+        .as_deref()
+        .ok_or("GitLab API token is missing")?;
+
+    let project_slug_encoded = config.tracker.project_slug.replace('/', "%2F");
+    let mut result = Vec::new();
+
+    for id in ids {
+        let url = format!(
+            "{}/api/v4/projects/{}/issues/{}",
+            config.tracker.endpoint.trim_end_matches('/'),
+            project_slug_encoded,
+            id
+        );
+
+        let trimmed = api_key.trim();
+        let mut req = client.get(&url).header("User-Agent", "skrvm");
+        if trimmed.starts_with("Bearer ") {
+            req = req.header("Authorization", trimmed);
+        } else {
+            req = req.header("PRIVATE-TOKEN", trimmed);
+        }
+
+        let res = req
+            .send()
+            .await
+            .map_err(|e| format!("GitLab request failed for issue {}: {}", id, e))?;
+
+        if res.status().is_success() {
+            let node: GitLabIssue = res
+                .json()
+                .await
+                .map_err(|e| format!("Failed to parse GitLab response: {}", e))?;
+            result.push(normalize_gitlab_issue(node, config));
+        }
+    }
+
+    // Sort to match order of input ids best-effort
+    result.sort_by(|a, b| {
+        let idx_a = ids.iter().position(|x| x == &a.id).unwrap_or(usize::MAX);
+        let idx_b = ids.iter().position(|x| x == &b.id).unwrap_or(usize::MAX);
+        idx_a.cmp(&idx_b)
+    });
+
+    Ok(result)
+}
+
+async fn fetch_issues_by_states_gitlab(
+    config: &Settings,
+    state_names: &[String],
+) -> Result<Vec<Issue>, String> {
+    if state_names.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let all = fetch_candidate_issues_gitlab(config).await?;
+    let filtered: Vec<Issue> = all
+        .into_iter()
+        .filter(|issue| {
+            state_names
+                .iter()
+                .any(|s| s.to_lowercase() == issue.state.to_lowercase())
+        })
+        .collect();
+
+    Ok(filtered)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1627,5 +1909,118 @@ mod tests {
         let issue = normalize_github_issue(node, &config);
 
         assert_eq!(issue.state, "Done");
+    }
+
+    #[test]
+    fn test_normalize_gitlab_issue() {
+        let raw_json = r#"{
+            "id": 12345,
+            "iid": 42,
+            "title": "Fix alignment",
+            "description": "The alignment is off",
+            "state": "opened",
+            "web_url": "https://gitlab.com/drew-simmons/skrvm/-/issues/42",
+            "assignee": {
+                "username": "drew-simmons"
+            },
+            "labels": ["In Progress"],
+            "created_at": "2026-05-30T12:00:00Z",
+            "updated_at": "2026-05-30T12:30:00Z"
+        }"#;
+
+        let config = Settings {
+            tracker: crate::config::TrackerConfig {
+                kind: "gitlab".to_string(),
+                active_states: vec!["Todo".to_string(), "In Progress".to_string()],
+                terminal_states: vec!["Done".to_string()],
+                assignee: Some("drew-simmons".to_string()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let node: GitLabIssue = serde_json::from_str(raw_json).unwrap();
+        let issue = normalize_gitlab_issue(node, &config);
+
+        assert_eq!(issue.id, "42");
+        assert_eq!(issue.identifier, "42");
+        assert_eq!(issue.title, "Fix alignment");
+        assert_eq!(issue.description, Some("The alignment is off".to_string()));
+        assert_eq!(issue.state, "In Progress");
+        assert_eq!(
+            issue.branch_name,
+            Some("feature/issue-42-fix-alignment".to_string())
+        );
+        assert_eq!(issue.assignee_id, Some("drew-simmons".to_string()));
+        assert_eq!(issue.assigned_to_worker, true);
+        assert_eq!(issue.labels, vec!["In Progress".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn test_fetch_candidate_issues_gitlab_mock() {
+        use tokio::io::AsyncReadExt;
+        use tokio::io::AsyncWriteExt;
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+
+        // Spawn mock GitLab server task
+        tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut buf = [0; 1024];
+            let n = socket.read(&mut buf).await.unwrap();
+            let req_str = String::from_utf8_lossy(&buf[..n]);
+
+            // Assert headers and path
+            assert!(
+                req_str.contains("private-token: mock-test-token")
+                    || req_str.contains("PRIVATE-TOKEN: mock-test-token")
+            );
+            assert!(req_str.contains(
+                "GET /api/v4/projects/drew-simmons%2Fskrvm/issues?per_page=50&page=1 HTTP/1.1"
+            ));
+
+            // Respond with HTTP 200 containing issues
+            let body = r#"[{"id":12345,"iid":42,"title":"Fix alignment","description":"The alignment is off","state":"opened","web_url":"https://gitlab.com/drew-simmons/skrvm/-/issues/42","assignee":{"username":"drew-simmons"},"labels":["In Progress"],"created_at":"2026-05-30T12:00:00Z","updated_at":"2026-05-30T12:30:00Z"}]"#;
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            socket.write_all(response.as_bytes()).await.unwrap();
+
+            // Next page request will be empty array to stop loop
+            let (mut socket2, _) = listener.accept().await.unwrap();
+            let mut buf2 = [0; 1024];
+            let n2 = socket2.read(&mut buf2).await.unwrap();
+            let req_str2 = String::from_utf8_lossy(&buf2[..n2]);
+            assert!(req_str2.contains("page=2"));
+            let body2 = "[]";
+            let response2 = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{}",
+                body2.len(),
+                body2
+            );
+            socket2.write_all(response2.as_bytes()).await.unwrap();
+        });
+
+        let config = Settings {
+            tracker: crate::config::TrackerConfig {
+                kind: "gitlab".to_string(),
+                endpoint: format!("http://127.0.0.1:{}", port),
+                api_key: Some("mock-test-token".to_string()),
+                project_slug: "drew-simmons/skrvm".to_string(),
+                active_states: vec!["In Progress".to_string()],
+                assignee: Some("drew-simmons".to_string()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let issues = fetch_candidate_issues_gitlab(&config).await.unwrap();
+        assert_eq!(issues.len(), 1);
+        assert_eq!(issues[0].id, "42");
+        assert_eq!(issues[0].title, "Fix alignment");
     }
 }

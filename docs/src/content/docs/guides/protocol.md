@@ -35,8 +35,8 @@ configured in `agents.command` and initiates the initialization handshake:
 
 Sent by Skrvm immediately after booting the subprocess.
 
-* **Params**: Empty/capabilities details.
-* **Agent Response**: Confirms agent capabilities and supported protocol
+- **Params**: Empty/capabilities details.
+- **Agent Response**: Confirms agent capabilities and supported protocol
   configurations.
 
 ### 2. `initialized` (Orchestrator Notification)
@@ -48,15 +48,15 @@ the setup phase.
 
 Allocates an execution thread matching the active ticket.
 
-* **Params**: `issue_id`, `workspace_path`.
-* **Agent Response**: Confirms thread allocation.
+- **Params**: `issue_id`, `workspace_path`.
+- **Agent Response**: Confirms thread allocation.
 
 ### 4. `turn/start` (Orchestrator Request)
 
 Triggers the actual execution of a single coding turn.
 
-* **Params**: Injects the compiled system prompt and workspace target variables.
-* **Agent Response**: Confirms the receipt of the prompt and begins process
+- **Params**: Injects the compiled system prompt and workspace target variables.
+- **Agent Response**: Confirms the receipt of the prompt and begins process
   loop.
 
 ---
@@ -71,18 +71,18 @@ intercepts these tool requests, executing approvals or custom trackers:
 Whenever an agent wishes to execute a bash command on the host (e.g.
 `npm run test` or `git status`), it MUST request approval from the orchestrator:
 
-* **Request Method**: `execCommandApproval`
-* **Params**: `{ command: "git status" }`
-* **Skrvm Response**: Returns an approved status. If it violates boundaries or
+- **Request Method**: `execCommandApproval`
+- **Params**: `{ command: "git status" }`
+- **Skrvm Response**: Returns an approved status. If it violates boundaries or
   auto-approve lists, Skrvm halts the agent and alerts the operator.
 
 ### File Patch Approval: `applyPatchApproval`
 
 Sent when the agent wishes to modify or write file contents:
 
-* **Request Method**: `applyPatchApproval`
-* **Params**: `{ path: "/absolute/path/file.py", patch: "..." }`
-* **Skrvm Response**: Confirms whether the patch was successfully written within
+- **Request Method**: `applyPatchApproval`
+- **Params**: `{ path: "/absolute/path/file.py", patch: "..." }`
+- **Skrvm Response**: Confirms whether the patch was successfully written within
   safe directory boundaries.
 
 ### Operator Handoff: `item/tool/requestUserInput`
@@ -90,8 +90,8 @@ Sent when the agent wishes to modify or write file contents:
 If the agent gets stuck (e.g. missing an API secret key or needing architectural
 confirmation from a human), it issues this request:
 
-* **Request Method**: `item/tool/requestUserInput`
-* **Params**:
+- **Request Method**: `item/tool/requestUserInput`
+- **Params**:
   `{ prompt: "Please specify the target production database name." }`
 
 **Orchestrator Action**: Skrvm immediately pauses execution, suspends the
@@ -103,17 +103,17 @@ response, and the agent continues.
 
 Sent by the agent once all actions for the current turn are finished.
 
-* **Method**: `turn/completed`
-* **Params**: Injects token usage metrics:
+- **Method**: `turn/completed`
+- **Params**: Injects token usage metrics:
 
-    ```json
-    {
-      "usage": {
-        "input_tokens": 12000,
-        "output_tokens": 4200
-      }
+  ```json
+  {
+    "usage": {
+      "input_tokens": 12000,
+      "output_tokens": 4200
     }
-    ```
+  }
+  ```
 
 Skrvm records these metrics to update global telemetry counters on the dashboard
 and executes `hooks.after_run`.

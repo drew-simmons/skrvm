@@ -32,13 +32,13 @@ layout with four distinct state columns:
 
 The top bar displays live global metrics:
 
-* **Active Workers**: Number of active coding processes compared to the
+- **Active Workers**: Number of active coding processes compared to the
   `max_concurrent_agents` cap.
-* **Total Tokens**: Live cumulative token usage (Input / Output) across all
+- **Total Tokens**: Live cumulative token usage (Input / Output) across all
   active workspaces.
-* **Total Cost**: Approximate cost of all active turns based on standard API
+- **Total Cost**: Approximate cost of all active turns based on standard API
   rates.
-* **Success Rate**: Percentage of completed turns that successfully passed local
+- **Success Rate**: Percentage of completed turns that successfully passed local
   verification test suites.
 
 ---
@@ -60,11 +60,11 @@ graph TD
 
 Displays live operating metrics:
 
-* **PID**: Process Identifier of the active agent subprocess.
-* **Branch**: Target git branch created for this specific ticket.
-* **Host Stats**: CPU usage and memory footprint of the host machine running the
+- **PID**: Process Identifier of the active agent subprocess.
+- **Branch**: Target git branch created for this specific ticket.
+- **Host Stats**: CPU usage and memory footprint of the host machine running the
   runner.
-* **Telemetry**: Accumulative token count and turnaround time for the specific
+- **Telemetry**: Accumulative token count and turnaround time for the specific
   workspace.
 
 ### 2. Automated Checklist Plan
@@ -72,11 +72,11 @@ Displays live operating metrics:
 Renders a dynamic visual checklist of the execution path. For example, during an
 integration:
 
-* `[x]` Create workspace directory
-* `[x]` Pull repository clone
-* `[/]` Execute before_run hook (installing dependencies)
-* `[ ]` Initialize Agent JSON-RPC turned process
-* `[ ]` Complete file patch revisions
+- `[x]` Create workspace directory
+- `[x]` Pull repository clone
+- `[/]` Execute before_run hook (installing dependencies)
+- `[ ]` Initialize Agent JSON-RPC turned process
+- `[ ]` Complete file patch revisions
 
 This plan gives you a clear visual indicator of exactly what the agent is doing
 at any given second.

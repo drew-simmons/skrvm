@@ -17,27 +17,33 @@ hero:
       variant: minimal
 ---
 
-import { Card, CardGrid } from '@astrojs/starlight/components';
+import { Card, CardGrid } from "@astrojs/starlight/components";
 
 ## Core Capabilities
 
 <CardGrid stagger>
-    <Card title="Hot-Reloaded Workflows" icon="rocket">
-        Dynamically loads settings and MiniJinja prompt templates from a local `WORKFLOW.md` automatically every 1.5 seconds.
-    </Card>
-    <Card title="Surgical Path Safety" icon="shield">
-        Strict directory containment validation ensures background agents operate exclusively within designated workspace sandboxes.
-    </Card>
-    <Card title="JSON-RPC Protocol" icon="seti:json">
-        Seamless stdio coordination with Antigravity, Kiro, or Codex coding agents supporting automated command/patch reviews.
-    </Card>
-    <Card title="Operator-in-the-Loop Handoff" icon="user">
-        Suspends execution and shifts tickets to **Human Review** when agents need credentials, dynamic input, or domain decisions.
-    </Card>
-    <Card title="Robust Error Recovery" icon="refresh">
-        Exponential backoff retries handle environment issues and build/test failures by scaling delays up to custom limits.
-    </Card>
-    <Card title="Advanced Concurrency & Scheduling" icon="setting">
-        Controls state-level concurrency slots, respects ticket ranking weights, and blocks execution on upstream ticket dependencies.
-    </Card>
+  <Card title="Hot-Reloaded Workflows" icon="rocket">
+    Dynamically loads settings and MiniJinja prompt templates from a local `WORKFLOW.md`
+    automatically every 1.5 seconds.
+  </Card>
+  <Card title="Surgical Path Safety" icon="shield">
+    Strict directory containment validation ensures background agents operate exclusively within
+    designated workspace sandboxes.
+  </Card>
+  <Card title="JSON-RPC Protocol" icon="seti:json">
+    Seamless stdio coordination with Antigravity, Kiro, or Codex coding agents supporting automated
+    command/patch reviews.
+  </Card>
+  <Card title="Operator-in-the-Loop Handoff" icon="user">
+    Suspends execution and shifts tickets to **Human Review** when agents need credentials, dynamic
+    input, or domain decisions.
+  </Card>
+  <Card title="Robust Error Recovery" icon="refresh">
+    Exponential backoff retries handle environment issues and build/test failures by scaling delays
+    up to custom limits.
+  </Card>
+  <Card title="Advanced Concurrency & Scheduling" icon="setting">
+    Controls state-level concurrency slots, respects ticket ranking weights, and blocks execution on
+    upstream ticket dependencies.
+  </Card>
 </CardGrid>

@@ -24,8 +24,8 @@ Add the following block to your `WORKFLOW.md`'s tracker configuration:
 ```yaml
 tracker:
   kind: "linear"
-  api_key: "$LINEAR_API_KEY"       # Resolved from shell environment
-  assignee: "me"                    # Filters issues assigned to you. Or leave empty.
+  api_key: "$LINEAR_API_KEY" # Resolved from shell environment
+  assignee: "me" # Filters issues assigned to you. Or leave empty.
   active_states:
     - "Todo"
     - "In Progress"
@@ -54,8 +54,8 @@ issues via custom JQL queries.
 tracker:
   kind: "jira"
   endpoint: "https://your-company.atlassian.net"
-  api_key: "$JIRA_API_KEY"         # Your Jira API Token
-  assignee: "$JIRA_ASSIGNEE"       # E.g. your Jira Account ID or email
+  api_key: "$JIRA_API_KEY" # Your Jira API Token
+  assignee: "$JIRA_ASSIGNEE" # E.g. your Jira Account ID or email
   project_slug: "PROJ"
   active_states:
     - "To Do"
@@ -76,7 +76,7 @@ Integrates repository issue pipelines directly into your workspace scheduler.
 tracker:
   kind: "github"
   endpoint: "https://api.github.com"
-  api_key: "$GITHUB_TOKEN"         # Personal Access Token (PAT)
+  api_key: "$GITHUB_TOKEN" # Personal Access Token (PAT)
   project_slug: "drew-simmons/skrvm" # Owner/Repository path
   active_states:
     - "open"
@@ -137,7 +137,7 @@ tracker:
     - "Done"
 ```
 
-* **Offline Development**: Allows sandbox evaluation without making remote
+- **Offline Development**: Allows sandbox evaluation without making remote
   network calls or requiring active API keys.
-* **Speed**: Runs immediately without API polling delays or rate limit
+- **Speed**: Runs immediately without API polling delays or rate limit
   constraints.

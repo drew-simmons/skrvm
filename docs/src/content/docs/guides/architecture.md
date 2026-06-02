@@ -52,8 +52,8 @@ and API tokens.
 
 Checks whether global concurrency constraints are satisfied.
 
-* Enforces a global agent process count cap (`max_concurrent_agents`).
-* Resolves ticket dependency trees. If a ticket lists other non-resolved issues
+- Enforces a global agent process count cap (`max_concurrent_agents`).
+- Resolves ticket dependency trees. If a ticket lists other non-resolved issues
   in its `blocked_by` array, the orchestrator prevents it from entering the
   active queue until all upstream tasks reach a terminal state.
 
@@ -100,11 +100,11 @@ sequenceDiagram
     end
 ```
 
-* **`after_create`**: Executed immediately after directory creation. Commonly
+- **`after_create`**: Executed immediately after directory creation. Commonly
   used to clone a repository into the workspace root.
-* **`before_run`**: Executed before launching each turn. Ensures that packages
+- **`before_run`**: Executed before launching each turn. Ensures that packages
   are installed and that local dev servers/linters are present.
-* **`after_run`**: Executed when a turn successfully finishes. Records progress,
+- **`after_run`**: Executed when a turn successfully finishes. Records progress,
   runs automated tests, and can stage/commit code.
 
 ---
@@ -115,10 +115,10 @@ Skrvm takes path containment very seriously. Since background agents run
 arbitrary code and manipulate file content, the Rust backend implements strict
 safety assertions before completing any file read or write operation:
 
-* **Prefix Validation**: The orchestrator checks that every requested path
+- **Prefix Validation**: The orchestrator checks that every requested path
   strictly starts with the resolved absolute path of the ticket's workspace
   subdirectory.
-* **Boundary Audits**: Any path containing `..` or relative directory jumps is
+- **Boundary Audits**: Any path containing `..` or relative directory jumps is
   instantly rejected, causing a sandbox violation.
-* **System Protection**: Standard system directories (such as `/etc`, `/usr`, or
+- **System Protection**: Standard system directories (such as `/etc`, `/usr`, or
   the host home root) are fully isolated from the agent's visibility.

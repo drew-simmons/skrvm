@@ -33,7 +33,7 @@
 }
 
 /* Force Dark Mode Styling */
-:root[data-theme='light'] {
+:root[data-theme="light"] {
   --sl-color-bg: #09090b;
   --sl-color-white: #fafafa;
   --sl-color-gray-1: #fafafa;
@@ -84,7 +84,12 @@
 }
 
 /* Fine-tune Heading Accents */
-h1, h2, h3, h4, h5, h6 {
+h1,
+h2,
+h3,
+h4,
+h5,
+h6 {
   letter-spacing: -0.3px;
   color: var(--sl-color-white) !important;
 }

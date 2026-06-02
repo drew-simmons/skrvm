@@ -211,6 +211,11 @@ orchestrator to resolve GitHub Issue **#{{ issue.identifier }}**.
       setTrackerApiKey("$GITHUB_TOKEN");
       setTrackerActiveStates("Todo, In Progress");
       setTrackerTerminalStates("Closed, Done");
+    } else if (kind === "gitlab") {
+      setTrackerEndpoint("https://gitlab.com");
+      setTrackerApiKey("$GITLAB_TOKEN");
+      setTrackerActiveStates("opened");
+      setTrackerTerminalStates("closed");
     } else if (kind === "jira") {
       setTrackerEndpoint("https://your-domain.atlassian.net");
       setTrackerApiKey("$JIRA_API_KEY");
@@ -2512,6 +2517,7 @@ orchestrator to resolve GitHub Issue **#{{ issue.identifier }}**.
                       onChange={(e) => handleTrackerKindChange(e.target.value)}
                     >
                       <option value="github">GitHub Issues</option>
+                      <option value="gitlab">GitLab Issues</option>
                       <option value="jira">Jira Software</option>
                       <option value="linear">Linear</option>
                       <option value="memory">In-Memory (Local Only)</option>

@@ -13,9 +13,9 @@ five minutes.
 
 Before setting up Skrvm, ensure you have the following toolchains installed:
 
-* **Rust & Cargo** (v1.75+ or newer) for building the backend core.
-* **Node.js** (v18+ or newer) for the React web interface.
-* **pnpm** (Package manager, `npm i -g pnpm`) for managing dependencies.
+- **Rust & Cargo** (v1.75+ or newer) for building the backend core.
+- **Node.js** (v18+ or newer) for the React web interface.
+- **pnpm** (Package manager, `npm i -g pnpm`) for managing dependencies.
 
 ---
 
@@ -77,7 +77,7 @@ codex:
   thread_sandbox: "workspace-write"
 ---
 You are a helpful coding agent. Solve this issue:
-Issue: {{ issue.title }}
+Issue: { { issue.title } }
 ```
 
 ### 4. Create a Mock Agent Script
@@ -132,7 +132,7 @@ automatically boot the mock agent script inside
 
 Now that you have your first offline run working:
 
-* Learn how to configure Jira or Linear trackers in the
+- Learn how to configure Jira or Linear trackers in the
   [Configuration Guide](/skrvm/guides/configuration/).
-* Understand the orchestrator architecture in
+- Understand the orchestrator architecture in
   [System Architecture](/skrvm/guides/architecture/).

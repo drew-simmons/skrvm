@@ -178,25 +178,36 @@ impl Settings {
                 .or_else(|| env::var("JIRA_API_TOKEN").ok())
                 .or_else(|| env::var("LINEAR_API_KEY").ok())
                 .or_else(|| env::var("GITHUB_TOKEN").ok())
-                .or_else(|| env::var("GITHUB_API_KEY").ok());
+                .or_else(|| env::var("GITHUB_API_KEY").ok())
+                .or_else(|| env::var("GITLAB_TOKEN").ok())
+                .or_else(|| env::var("GITLAB_API_KEY").ok())
+                .or_else(|| env::var("GITLAB_API_TOKEN").ok());
         } else {
             self.tracker.api_key = env::var("JIRA_API_KEY")
                 .ok()
                 .or_else(|| env::var("JIRA_API_TOKEN").ok())
                 .or_else(|| env::var("LINEAR_API_KEY").ok())
                 .or_else(|| env::var("GITHUB_TOKEN").ok())
-                .or_else(|| env::var("GITHUB_API_KEY").ok());
+                .or_else(|| env::var("GITHUB_API_KEY").ok())
+                .or_else(|| env::var("GITLAB_TOKEN").ok())
+                .or_else(|| env::var("GITLAB_API_KEY").ok())
+                .or_else(|| env::var("GITLAB_API_TOKEN").ok());
         }
 
         if let Some(ref assignee) = self.tracker.assignee {
             self.tracker.assignee = resolve_env_ref(assignee)
                 .or_else(|| env::var("JIRA_ASSIGNEE").ok())
                 .or_else(|| env::var("LINEAR_ASSIGNEE").ok())
-                .or_else(|| env::var("GITHUB_ASSIGNEE").ok());
+                .or_else(|| env::var("GITHUB_ASSIGNEE").ok())
+                .or_else(|| env::var("GITLAB_ASSIGNEE").ok());
         }
 
         if self.tracker.kind == "github" && self.tracker.endpoint.is_empty() {
             self.tracker.endpoint = "https://api.github.com".to_string();
+        }
+
+        if self.tracker.kind == "gitlab" && self.tracker.endpoint.is_empty() {
+            self.tracker.endpoint = "https://gitlab.com".to_string();
         }
 
         // Workspace Path resolution
@@ -250,6 +261,7 @@ impl Settings {
             && self.tracker.kind != "jira"
             && self.tracker.kind != "memory"
             && self.tracker.kind != "github"
+            && self.tracker.kind != "gitlab"
         {
             return Err(format!("Unsupported tracker kind: {}", self.tracker.kind));
         }
@@ -290,6 +302,18 @@ impl Settings {
             }
             if self.tracker.project_slug.is_empty() {
                 return Err("Missing GitHub project_slug".to_string());
+            }
+        }
+
+        if self.tracker.kind == "gitlab" {
+            if self.tracker.api_key.is_none() || self.tracker.api_key.as_ref().unwrap().is_empty() {
+                return Err(
+                    "Missing GitLab API token. Export GITLAB_TOKEN or set tracker.api_key"
+                        .to_string(),
+                );
+            }
+            if self.tracker.project_slug.is_empty() {
+                return Err("Missing GitLab project_slug".to_string());
             }
         }
 

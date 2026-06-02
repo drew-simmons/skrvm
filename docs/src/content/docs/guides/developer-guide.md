@@ -18,73 +18,73 @@ automate checks. Always execute these before creating a pull request.
 
 Keep all files formatted to match local styling standards:
 
-* **Format Frontend TypeScript / TSX**:
+- **Format Frontend TypeScript / TSX**:
 
-    ```bash
-    pnpm fmt:ts
-    ```
+  ```bash
+  pnpm fmt:ts
+  ```
 
-* **Format Backend Rust**:
+- **Format Backend Rust**:
 
-    ```bash
-    pnpm fmt:rust
-    ```
+  ```bash
+  pnpm fmt:rust
+  ```
 
-* **Format Both**:
+- **Format Both**:
 
-    ```bash
-    pnpm fmt
-    ```
+  ```bash
+  pnpm fmt
+  ```
 
-* **Format Markdown**:
+- **Format Markdown**:
 
-    ```bash
-    uvx rumdl check --config 'MD013.code-blocks=false' --config 'MD013.reflow=true' --disable MD036,MD041 --fix <path-to-markdown-file>
-    ```
+  ```bash
+  uvx rumdl check --config 'MD013.code-blocks=false' --config 'MD013.reflow=true' --disable MD036,MD041 --fix <path-to-markdown-file>
+  ```
 
 ### Linting & Static Analysis
 
 Clean all static analysis audits and compile warnings:
 
-* **Lint Frontend TypeScript**:
+- **Lint Frontend TypeScript**:
 
-    ```bash
-    pnpm lint:ts
-    ```
+  ```bash
+  pnpm lint:ts
+  ```
 
-* **Lint Backend Rust (Clippy)**:
+- **Lint Backend Rust (Clippy)**:
 
-    ```bash
-    pnpm lint:rust
-    ```
+  ```bash
+  pnpm lint:rust
+  ```
 
-* **Lint Both**:
+- **Lint Both**:
 
-    ```bash
-    pnpm lint
-    ```
+  ```bash
+  pnpm lint
+  ```
 
 ### Test Suites
 
 All tests must pass locally:
 
-* **Run Frontend Tests** (Vitest):
+- **Run Frontend Tests** (Vitest):
 
-    ```bash
-    pnpm test:ts
-    ```
+  ```bash
+  pnpm test:ts
+  ```
 
-* **Run Backend Tests** (Cargo):
+- **Run Backend Tests** (Cargo):
 
-    ```bash
-    pnpm test:rust
-    ```
+  ```bash
+  pnpm test:rust
+  ```
 
-* **Run Complete Test Runner**:
+- **Run Complete Test Runner**:
 
-    ```bash
-    pnpm test
-    ```
+  ```bash
+  pnpm test
+  ```
 
 ---
 
@@ -98,9 +98,9 @@ security is absolute:
 Any code modifying file access or creating workspace directory entries must use
 the native validation helper `validate_workspace_cwd`.
 
-* **Rule**: Never allow path evaluations containing parent traversals (`../`) or
+- **Rule**: Never allow path evaluations containing parent traversals (`../`) or
   matching the root workspace folder directly.
-* **Action**: Reject any relative or nested path parameter from coding agents
+- **Action**: Reject any relative or nested path parameter from coding agents
   before letting it touch the filesystem.
 
 ### 2. Side-Effect Free Integrations
@@ -108,9 +108,9 @@ the native validation helper `validate_workspace_cwd`.
 When writing integration tests or tracking modules for third-party trackers
 (like Jira, Linear, or GitLab):
 
-* **Rule**: Do not perform real HTTP calls to live remote endpoints during
+- **Rule**: Do not perform real HTTP calls to live remote endpoints during
   standard tests.
-* **Action**: Always use local in-memory mock endpoints or mock listeners
+- **Action**: Always use local in-memory mock endpoints or mock listeners
   (`TcpListener`) inside the Rust/TypeScript test suites to guarantee offline
   capability.
 
