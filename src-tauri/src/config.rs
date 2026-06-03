@@ -13,15 +13,21 @@ pub struct TrackerConfig {
     pub assignee: Option<String>,
     pub active_states: Vec<String>,
     pub terminal_states: Vec<String>,
+    /// Opt-in worker gate: when non-empty, an issue must carry at least one of
+    /// these labels to be eligible for dispatch. Critical for large/shared
+    /// trackers so the bot never claims human-owned tickets.
+    pub required_labels: Vec<String>,
 }
 
 impl Default for TrackerConfig {
     fn default() -> Self {
+        // Zero-config default: the credential-free in-memory mock tracker so a
+        // freshly launched app is immediately dispatch-valid with no setup.
         Self {
-            kind: "jira".to_string(),
+            kind: "memory".to_string(),
             endpoint: String::new(),
             api_key: None,
-            project_slug: String::new(),
+            project_slug: "DEMO".to_string(),
             assignee: None,
             active_states: vec!["Todo".to_string(), "In Progress".to_string()],
             terminal_states: vec![
@@ -31,6 +37,7 @@ impl Default for TrackerConfig {
                 "Duplicate".to_string(),
                 "Done".to_string(),
             ],
+            required_labels: Vec::new(),
         }
     }
 }
@@ -70,6 +77,9 @@ pub struct AgentConfig {
     pub max_turns: usize,
     pub max_retry_backoff_ms: u64,
     pub max_concurrent_agents_by_state: HashMap<String, usize>,
+    /// Team-size profile that drives wizard defaults ("solo", "small", "large").
+    /// Purely informational on the backend; recorded for round-tripping.
+    pub team_profile: String,
 }
 
 impl Default for AgentConfig {
@@ -79,6 +89,7 @@ impl Default for AgentConfig {
             max_turns: 20,
             max_retry_backoff_ms: 300000,
             max_concurrent_agents_by_state: HashMap::new(),
+            team_profile: "small".to_string(),
         }
     }
 }
@@ -204,6 +215,11 @@ impl Settings {
                 .or_else(|| env::var("GITHUB_ASSIGNEE").ok())
                 .or_else(|| env::var("GITLAB_ASSIGNEE").ok());
         }
+
+        // Normalize the opt-in worker label gate (drop blank entries)
+        self.tracker
+            .required_labels
+            .retain(|l| !l.trim().is_empty());
 
         if self.tracker.kind == "github" && self.tracker.endpoint.is_empty() {
             self.tracker.endpoint = "https://api.github.com".to_string();

@@ -527,6 +527,100 @@ fn verify_prompt_template(template: String) -> Result<(), String> {
     Ok(())
 }
 
+/// Bundled mock agent script. Speaks the JSON-RPC handshake so the zero-config
+/// demo issue completes a turn (with token metrics) without any external
+/// coding-agent CLI installed.
+const BUNDLED_MOCK_AGENT: &str = r#"#!/bin/bash
+# Skrvm bundled mock agent (auto-generated for the zero-config demo).
+# Speaks the JSON-RPC app-server handshake over stdio.
+read -r line # initialize
+echo '{"id":1,"result":{"capabilities":{}}}'
+read -r line # initialized
+read -r line # thread/start
+echo '{"id":2,"result":{"thread":{"id":"mock-thread-id"}}}'
+read -r line # turn/start
+echo '{"id":3,"result":{"turn":{"id":"mock-turn-id"}}}'
+sleep 2
+echo '{"method":"turn/completed","params":{"usage":{"input_tokens":120,"output_tokens":80}}}'
+"#;
+
+/// Default WORKFLOW.md seeded on first run. Uses the credential-free `memory`
+/// tracker and the bundled mock agent so the dashboard shows a live run with
+/// zero setup. `{MOCK_AGENT_PATH}` is replaced with the absolute script path.
+const DEFAULT_WORKFLOW_TEMPLATE: &str = r#"---
+# Skrvm zero-config demo workflow (auto-generated on first run).
+# It runs entirely offline using the in-memory mock tracker and a bundled mock
+# agent. Open the in-app Setup wizard to connect a real tracker and coding agent.
+tracker:
+  kind: "memory"
+  project_slug: "DEMO"
+  active_states:
+    - "Todo"
+  terminal_states:
+    - "Done"
+polling:
+  interval_ms: 10000
+workspace:
+  root: "~/dev/scratch/skrvm/workspaces"
+agent:
+  team_profile: "solo"
+  max_concurrent_agents: 2
+  max_turns: 5
+agy:
+  command: "{MOCK_AGENT_PATH}"
+  thread_sandbox: "workspace-write"
+---
+
+You are an elite agentic coding assistant spawned by the Skrvm orchestrator to
+resolve ticket **{{ issue.identifier }}**.
+
+### Task Overview
+
+- **Title**: {{ issue.title }}
+- **Status**: {{ issue.state }}
+
+#### Description
+
+```markdown
+{{ issue.description }}
+```
+"#;
+
+/// Writes the bundled mock agent and a zero-config `WORKFLOW.md` next to it.
+/// Returns the path to the seeded workflow file. Best-effort: any IO failure is
+/// surfaced to the caller so it can keep operating with in-memory defaults.
+fn bootstrap_zero_config(workflow_path: &Path) -> Result<(), String> {
+    let dir = workflow_path
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| PathBuf::from("."));
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| format!("Failed to create config directory {:?}: {}", dir, e))?;
+
+    // Write the bundled mock agent alongside the workflow file.
+    let agent_path = dir.join("skrvm_mock_agent.sh");
+    std::fs::write(&agent_path, BUNDLED_MOCK_AGENT)
+        .map_err(|e| format!("Failed to write bundled mock agent: {}", e))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Ok(meta) = std::fs::metadata(&agent_path) {
+            let mut perms = meta.permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(&agent_path, perms).ok();
+        }
+    }
+
+    let content = DEFAULT_WORKFLOW_TEMPLATE.replace(
+        "{MOCK_AGENT_PATH}",
+        &agent_path.to_string_lossy().replace('"', "\\\""),
+    );
+    std::fs::write(workflow_path, content)
+        .map_err(|e| format!("Failed to write default WORKFLOW.md: {}", e))?;
+
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -558,6 +652,25 @@ pub fn run() {
                 fallback_path.push("WORKFLOW.md");
                 if fallback_path.exists() {
                     workflow_path = fallback_path;
+                }
+            }
+
+            // Zero-config batteries-included: if no workflow file exists anywhere,
+            // seed a working offline demo (memory tracker + bundled mock agent)
+            // so the app runs immediately with no credentials or external CLI.
+            if !workflow_path.exists() {
+                let seed_path = current_dir.join("WORKFLOW.md");
+                match bootstrap_zero_config(&seed_path) {
+                    Ok(()) => {
+                        println!(
+                            "[Setup] No WORKFLOW.md found. Seeded zero-config demo at {:?}",
+                            seed_path
+                        );
+                        workflow_path = seed_path;
+                    }
+                    Err(e) => {
+                        eprintln!("[Setup] Failed to seed zero-config WORKFLOW.md: {}", e);
+                    }
                 }
             }
 
@@ -619,4 +732,59 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::workflow::parse_workflow;
+
+    #[test]
+    fn test_default_settings_are_zero_config_valid() {
+        // A freshly defaulted Settings must be dispatch-valid with no credentials
+        // so the app is batteries-included out of the box.
+        let settings = config::Settings::default();
+        assert_eq!(settings.tracker.kind, "memory");
+        assert!(
+            settings.validate().is_ok(),
+            "default settings failed validation: {:?}",
+            settings.validate()
+        );
+    }
+
+    #[test]
+    fn test_bootstrap_zero_config_seeds_runnable_workflow() {
+        let dir = std::env::temp_dir().join(format!(
+            "skrvm_bootstrap_test_{}",
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
+        ));
+        let workflow_path = dir.join("WORKFLOW.md");
+
+        bootstrap_zero_config(&workflow_path).unwrap();
+
+        // The workflow file and bundled mock agent must both exist.
+        assert!(workflow_path.exists());
+        let agent_path = dir.join("skrvm_mock_agent.sh");
+        assert!(agent_path.exists());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&agent_path).unwrap().permissions().mode();
+            assert_eq!(mode & 0o111, 0o111, "mock agent must be executable");
+        }
+
+        // The seeded workflow must parse and validate with zero credentials, and
+        // the agent command must point at the bundled mock agent.
+        let content = std::fs::read_to_string(&workflow_path).unwrap();
+        let workflow = parse_workflow(&content, &workflow_path).unwrap();
+        assert_eq!(workflow.config.tracker.kind, "memory");
+        assert!(workflow
+            .config
+            .codex
+            .command
+            .contains("skrvm_mock_agent.sh"));
+        assert!(!workflow.prompt_template.is_empty());
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
 }

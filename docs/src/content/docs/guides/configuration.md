@@ -30,7 +30,7 @@ tracker:
 
 # 2. MiniJinja System Prompt Template
 
-You are Antigravity, resolving issue {{ issue.identifier }}.
+You are an elite agentic coding assistant, resolving issue {{ issue.identifier }}.
 ...
 ```
 

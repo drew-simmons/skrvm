@@ -40,12 +40,20 @@ graph TD
   suspends the agent and shifts the ticket into **Human Review**. Operators can
   inspect the full context, provide manual guidance via the UI, and resume
   execution seamlessly.
+- **Guided Multi-Step Setup Wizard**: A stepped onboarding flow (Team Profile →
+  Tracker → Coding Agent → Workspace → Review) with per-step audits. Picking a
+  **team profile** (Solo, Small Team, or Large Org) seeds sensible concurrency,
+  polling, and scoping defaults so Skrvm fits both a single developer and a busy
+  shared tracker.
 - **Advanced Scheduling & Concurrency**:
   - Concurrently runs up to `$max_concurrent_agents` tasks.
   - Enforces state-level concurrency limits.
   - Prioritizes tickets based on tracker rankings and dates.
   - Blocks tasks from executing if their upstream ticket dependencies are
     non-terminal.
+  - **Opt-in worker label gate (`required_labels`)**: on large shared trackers,
+    only dispatch issues carrying one of the configured labels so the bot never
+    claims human-owned tickets.
 - **Exponential Backoff Retries**: Handles environment errors or test failures
   by scaling delays up to a custom limit.
 
@@ -196,6 +204,8 @@ tracker:
   terminal_states:
     - "Closed"
     - "Done"
+  required_labels:                        # Opt-in worker gate (recommended for large shared trackers)
+    - "skrvm"                             #   Leave empty ([]) for solo/small teams
 
 polling:
   interval_ms: 30000                      # How often to check for tracker updates
@@ -204,6 +214,7 @@ workspace:
   root: "~/dev/scratch/skrvm/workspaces"  # Tilde ~ and env variables supported
 
 agent:
+  team_profile: "large"                   # "solo" | "small" | "large" — seeds wizard defaults
   max_concurrent_agents: 5
   max_turns: 20
   max_retry_backoff_ms: 300000
@@ -220,8 +231,8 @@ hooks:
   timeout_ms: 60000
 ---
 
-You are Antigravity, an elite agentic coding assistant spawned by the Skrvm
-orchestrator to resolve ticket **{{ issue.identifier }}**.
+You are an elite agentic coding assistant spawned by the Skrvm orchestrator to
+resolve ticket **{{ issue.identifier }}**.
 
 ### Task Overview
 - **Title**: {{ issue.title }}
@@ -332,62 +343,44 @@ Use `pnpm` to install node modules and verify typescript targets:
 pnpm install
 ```
 
-### 3. Setup Your `WORKFLOW.md` Config File
+### 3. (Optional) Configure `WORKFLOW.md`
 
-Create a `WORKFLOW.md` file in the root directory. You can use the `Memory`
-tracker for a zero-credentials offline test.
+**Zero-config, batteries included:** you can skip this step entirely. On first
+launch, if no `WORKFLOW.md` is found, Skrvm automatically seeds a working
+offline demo — a `WORKFLOW.md` using the credential-free **Memory** tracker plus
+a bundled mock coding agent — and immediately dispatches a demo ticket so the
+dashboard shows a live run with **no credentials and no external CLI required**.
 
-For a mock run, setup this file:
+When you are ready for real work, open the in-app **Setup** wizard (or edit
+`WORKFLOW.md` directly) to connect a real tracker and coding agent. All
+credentials should be supplied via environment variables using the `$VAR` syntax
+(e.g. `api_key: "$GITHUB_TOKEN"`) — never hardcode secrets in `WORKFLOW.md`.
+
+The auto-generated demo config looks like this:
 
 ```yaml
 ---
 tracker:
   kind: "memory"
-  endpoint: ""
-  api_key: ""
   project_slug: "DEMO"
   active_states:
     - "Todo"
   terminal_states:
     - "Done"
-
 polling:
   interval_ms: 10000
-
 workspace:
   root: "~/dev/scratch/skrvm/workspaces"
-
 agent:
+  team_profile: "solo"
   max_concurrent_agents: 2
   max_turns: 5
-
-codex:
-  command: "./scratch/mock_agent.sh"
+agy:
+  command: "<bundled mock agent>" # auto-written next to WORKFLOW.md
   thread_sandbox: "workspace-write"
 ---
-You are a helpful coding agent. Solve this:
-Issue: { { issue.title } }
-```
-
-_(Optional)_ Create a simple mock script `./scratch/mock_agent.sh` that prints
-out mock JSON-RPC responses to simulate turn progression:
-
-```bash
-mkdir -p scratch
-cat << 'EOF' > scratch/mock_agent.sh
-#!/bin/bash
-# Mock Agent Stdio Handshake Script
-read -r line # Read initialize
-echo '{"id":1,"result":{"capabilities":{}}}'
-read -r line # Read initialized
-read -r line # Read thread/start
-echo '{"id":2,"result":{"thread":{"id":"mock-thread-id"}}}'
-read -r line # Read turn/start
-echo '{"id":3,"result":{"turn":{"id":"mock-turn-id"}}}'
-sleep 3
-echo '{"method":"turn/completed","params":{"usage":{"input_tokens":120,"output_tokens":80}}}'
-EOF
-chmod +x scratch/mock_agent.sh
+You are an elite agentic coding assistant, solving ticket {{ issue.identifier }}:
+  { { issue.title } }
 ```
 
 ### 4. Run the Desktop Application in Dev Mode

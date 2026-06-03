@@ -44,8 +44,8 @@ agy:
   thread_sandbox: "workspace-write"
 ---
 
-You are {{ agent_name }}, an elite agentic coding assistant spawned by the Skrvm
-orchestrator to resolve ticket **{{ issue.identifier }}**.
+You are an elite agentic coding assistant spawned by the Skrvm orchestrator to
+resolve ticket **{{ issue.identifier }}**.
 
 {% if attempt > 0 %}
 

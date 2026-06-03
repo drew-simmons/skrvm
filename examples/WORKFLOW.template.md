@@ -31,6 +31,11 @@ tracker:
     - "Done"
     - "Canceled"
 
+  # Opt-in worker label gate. When non-empty, an issue must carry one of these
+  # labels to be eligible for dispatch. Recommended for large/shared trackers so
+  # the bot never claims human-owned tickets. Leave empty ([]) to disable.
+  required_labels: []
+
 polling:
   # How often the orchestrator polls your issue tracker (in milliseconds)
   interval_ms: 15000
@@ -41,6 +46,9 @@ workspace:
   root: "~/dev/scratch/skrvm/workspaces"
 
 agent:
+  # Team-size profile that informs sane defaults: "solo", "small", or "large".
+  # Solo => 1 worker; small => 3 workers; large => many workers + a label gate.
+  team_profile: "small"
   # Global limit on concurrent background coding agents
   max_concurrent_agents: 3
   # Maximum allowed JSON-RPC turn cycles per worker before timing out
@@ -83,8 +91,8 @@ hooks:
   timeout_ms: 120000
 ---
 
-You are {{ agent_name }}, an elite agentic coding assistant spawned by the Skrvm
-orchestrator to resolve ticket **{{ issue.identifier }}**.
+You are an elite agentic coding assistant spawned by the Skrvm orchestrator to
+resolve ticket **{{ issue.identifier }}**.
 
 {% if attempt > 0 %}
 

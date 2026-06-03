@@ -202,6 +202,12 @@ impl Orchestrator {
             return Ok(false);
         }
 
+        // Opt-in worker label gate: on shared/large-team trackers, only dispatch
+        // issues that carry at least one of the configured required labels.
+        if !issue_passes_label_gate(issue, &settings.tracker.required_labels) {
+            return Ok(false);
+        }
+
         // Check if state is in active states list
         let active_set: HashSet<String> = settings
             .tracker
@@ -1074,6 +1080,19 @@ fn should_schedule_success_continuation(settings: &Settings) -> bool {
     settings.codex.protocol != "oneshot"
 }
 
+/// Returns true when the issue satisfies the opt-in label gate. An empty gate
+/// (no required labels configured) accepts every issue, preserving the simple
+/// solo/small-team experience. Matching is case-insensitive.
+fn issue_passes_label_gate(issue: &Issue, required_labels: &[String]) -> bool {
+    if required_labels.is_empty() {
+        return true;
+    }
+    let issue_labels: HashSet<String> = issue.labels.iter().map(|l| l.to_lowercase()).collect();
+    required_labels
+        .iter()
+        .any(|l| issue_labels.contains(&l.to_lowercase()))
+}
+
 fn priority_rank(priority: Option<i64>) -> i64 {
     match priority {
         Some(p) if (1..=4).contains(&p) => p,
@@ -1229,6 +1248,76 @@ mod tests {
         };
 
         assert!(orch.should_dispatch(&cleared_issue, &settings).unwrap());
+    }
+
+    #[test]
+    fn test_issue_passes_label_gate() {
+        let mut issue = Issue {
+            id: "issue-1".to_string(),
+            identifier: "PROJ-1".to_string(),
+            title: "Labeled ticket".to_string(),
+            description: None,
+            priority: None,
+            state: "Todo".to_string(),
+            branch_name: None,
+            url: None,
+            assignee_id: None,
+            blocked_by: vec![],
+            labels: vec!["Bug".to_string(), "skrvm".to_string()],
+            assigned_to_worker: true,
+            created_at: None,
+            updated_at: None,
+        };
+
+        // Empty gate accepts everything (solo/small-team default)
+        assert!(issue_passes_label_gate(&issue, &[]));
+
+        // Matching label (case-insensitive) passes
+        assert!(issue_passes_label_gate(&issue, &["SKRVM".to_string()]));
+
+        // No matching label is rejected
+        assert!(!issue_passes_label_gate(&issue, &["automate".to_string()]));
+
+        // Any-of semantics: one of several required labels is enough
+        assert!(issue_passes_label_gate(
+            &issue,
+            &["automate".to_string(), "bug".to_string()]
+        ));
+
+        // An unlabeled issue cannot pass a non-empty gate
+        issue.labels.clear();
+        assert!(!issue_passes_label_gate(&issue, &["skrvm".to_string()]));
+    }
+
+    #[test]
+    fn test_should_dispatch_respects_label_gate() {
+        let orch = make_test_orchestrator();
+        let mut settings = Settings::default();
+        settings.tracker.required_labels = vec!["skrvm".to_string()];
+
+        let mut issue = Issue {
+            id: "issue-1".to_string(),
+            identifier: "PROJ-1".to_string(),
+            title: "Gated ticket".to_string(),
+            description: None,
+            priority: None,
+            state: "Todo".to_string(),
+            branch_name: None,
+            url: None,
+            assignee_id: None,
+            blocked_by: vec![],
+            labels: vec!["enhancement".to_string()],
+            assigned_to_worker: true,
+            created_at: None,
+            updated_at: None,
+        };
+
+        // Missing the required label: not eligible
+        assert!(!orch.should_dispatch(&issue, &settings).unwrap());
+
+        // Carrying the required label: eligible
+        issue.labels.push("skrvm".to_string());
+        assert!(orch.should_dispatch(&issue, &settings).unwrap());
     }
 
     #[test]

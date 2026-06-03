@@ -229,6 +229,40 @@ Elite agent: {{ issue.title }}"#;
     }
 
     #[test]
+    fn test_parse_workflow_team_profile_and_label_gate() {
+        let content = r#"---
+tracker:
+  kind: "memory"
+  project_slug: "TEST"
+  required_labels:
+    - "skrvm"
+    - "automate"
+agent:
+  team_profile: "large"
+  max_concurrent_agents: 8
+---
+Prompt"#;
+        let workflow = parse_workflow(content, Path::new("dummy/WORKFLOW.md")).unwrap();
+        assert_eq!(
+            workflow.config.tracker.required_labels,
+            vec!["skrvm".to_string(), "automate".to_string()]
+        );
+        assert_eq!(workflow.config.agent.team_profile, "large");
+        assert_eq!(workflow.config.agent.max_concurrent_agents, 8);
+
+        // Backward compatibility: omitting the new fields yields safe defaults.
+        let legacy = r#"---
+tracker:
+  kind: "memory"
+  project_slug: "TEST"
+---
+Prompt"#;
+        let legacy_wf = parse_workflow(legacy, Path::new("dummy/WORKFLOW.md")).unwrap();
+        assert!(legacy_wf.config.tracker.required_labels.is_empty());
+        assert_eq!(legacy_wf.config.agent.team_profile, "small");
+    }
+
+    #[test]
     fn test_parse_workflow_aliases() {
         let content_agy = r#"---
 tracker:

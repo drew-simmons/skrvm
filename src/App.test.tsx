@@ -336,6 +336,77 @@ describe("Skrvm Frontend React App", () => {
     // 3. Verify TodoMVC sandbox is NOT rendered
     expect(screen.queryByText("React • TodoMVC (Sandbox)")).not.toBeInTheDocument();
   });
+
+  it("should open the guided setup wizard and drive team-profile scoping defaults", async () => {
+    const emptyState = {
+      poll_interval_ms: 10000,
+      max_concurrent_agents: 2,
+      running: {},
+      completed: [],
+      claimed: [],
+      blocked: {},
+      retry_attempts: {},
+      backlog: [],
+      codex_totals: {
+        input_tokens: 0,
+        output_tokens: 0,
+        total_tokens: 0,
+        seconds_running: 0.0,
+      },
+      last_error: null,
+    };
+
+    // Route invoke calls per-command so the wizard can open and verify steps.
+    vi.mocked(invoke).mockImplementation((cmd: string) => {
+      switch (cmd) {
+        case "get_orchestrator_state":
+          return Promise.resolve(emptyState as any);
+        case "get_current_workflow":
+          return Promise.resolve(null as any);
+        case "detect_local_git_info":
+          return Promise.resolve({
+            project_dir: "/tmp/project",
+            remote_url: "git@github.com:acme/widgets.git",
+            project_slug: "acme/widgets",
+            current_branch: "main",
+            detected_tracker: "github",
+          } as any);
+        case "test_tracker_connection":
+          return Promise.resolve(3 as any);
+        default:
+          // verify_workspace_setup, verify_agent_command, verify_prompt_template
+          return Promise.resolve(undefined as any);
+      }
+    });
+
+    await act(async () => {
+      render(<App />);
+    });
+
+    // Open the wizard
+    await act(async () => {
+      fireEvent.click(screen.getByText("Setup Wizard"));
+    });
+
+    // Step 1: Team Profile is shown
+    expect(screen.getByText("Team Profile")).toBeInTheDocument();
+    expect(screen.getByText("Solo")).toBeInTheDocument();
+    expect(screen.getByText("Large Org")).toBeInTheDocument();
+
+    // Selecting the Large Org profile recommends the opt-in label gate
+    await act(async () => {
+      fireEvent.click(screen.getByText("Large Org"));
+    });
+
+    // Advance to the Tracker step and confirm the required-labels gate field exists
+    await act(async () => {
+      fireEvent.click(screen.getByText("Next →"));
+    });
+    expect(screen.getByText("Issue Tracker")).toBeInTheDocument();
+    const labelInput = screen.getByPlaceholderText("e.g. skrvm, automate") as HTMLInputElement;
+    // Large profile pre-fills the gate with "skrvm"
+    expect(labelInput.value).toBe("skrvm");
+  });
 });
 
 // Mock type check support helper

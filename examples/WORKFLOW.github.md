@@ -29,6 +29,12 @@ tracker:
   terminal_states:
     - "Done"
 
+  # Opt-in worker label gate. On a busy shared tracker, leave this set so Skrvm
+  # only picks up issues carrying one of these labels and never claims
+  # human-owned tickets. Leave empty ([]) for solo/small teams.
+  required_labels:
+    - "skrvm"
+
 polling:
   # How often the orchestrator polls your issue tracker (in milliseconds)
   interval_ms: 30000
@@ -39,8 +45,10 @@ workspace:
   root: "~/dev/scratch/skrvm/workspaces"
 
 agent:
+  # Team-size profile that informs sane defaults: "solo", "small", or "large".
+  team_profile: "large"
   # Global limit on concurrent background coding agents
-  max_concurrent_agents: 3
+  max_concurrent_agents: 8
   # Maximum allowed JSON-RPC turn cycles per worker before timing out
   max_turns: 20
   # Maximum backoff delay for retrying failed agents (in milliseconds)
@@ -74,8 +82,8 @@ hooks:
   timeout_ms: 120000
 ---
 
-You are {{ agent_name }}, an elite agentic coding assistant spawned by the Skrvm
-orchestrator to resolve GitHub Issue **#{{ issue.identifier }}**.
+You are an elite agentic coding assistant spawned by the Skrvm orchestrator to
+resolve GitHub Issue **#{{ issue.identifier }}**.
 
 {% if attempt > 0 %}
 

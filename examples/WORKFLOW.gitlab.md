@@ -28,6 +28,10 @@ tracker:
   terminal_states:
     - "closed"
 
+  # Opt-in worker label gate. When non-empty, an issue must carry one of these
+  # labels to be eligible for dispatch. Recommended for large/shared trackers.
+  required_labels: []
+
 polling:
   # How often the orchestrator polls your issue tracker (in milliseconds)
   interval_ms: 30000
@@ -38,6 +42,8 @@ workspace:
   root: "~/dev/scratch/skrvm/workspaces"
 
 agent:
+  # Team-size profile that informs sane defaults: "solo", "small", or "large".
+  team_profile: "small"
   # Global limit on concurrent background coding agents
   max_concurrent_agents: 3
   # Maximum allowed JSON-RPC turn cycles per worker before timing out
@@ -73,8 +79,8 @@ hooks:
   timeout_ms: 120000
 ---
 
-You are {{ agent_name }}, an elite agentic coding assistant spawned by the Skrvm
-orchestrator to resolve GitLab Issue **#{{ issue.identifier }}**.
+You are an elite agentic coding assistant spawned by the Skrvm orchestrator to
+resolve GitLab Issue **#{{ issue.identifier }}**.
 
 {% if attempt > 0 %}
 
