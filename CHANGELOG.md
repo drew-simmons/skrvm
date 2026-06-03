@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.7.0](https://github.com/drew-simmons/skrvm/compare/v0.6.1...v0.7.0) (2026-06-03)
+
+
+### Features
+
+* make the ui better ([d4d6bfb](https://github.com/drew-simmons/skrvm/commit/d4d6bfb0b4d98f9641ab948ce572c7d27611ab14))
+* simplify the setup config ([5ea2e49](https://github.com/drew-simmons/skrvm/commit/5ea2e496d0c596af8530c5a8af4554b16fb2af25))
+
 ## [0.6.1](https://github.com/drew-simmons/skrvm/compare/v0.6.0...v0.6.1) (2026-06-02)
 
 ### Bug Fixes
